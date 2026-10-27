@@ -96,6 +96,13 @@ canopen:
     # `platform: canopen` entity exposed for debugging (state from a remote state slot)
     - index: 21
       id: remote_cover_position
+    # climates: single set point (heat only) and two-point (heat + cool)
+    - index: 22
+      id: climate_heat
+      tpdo: 4
+    - index: 23
+      id: climate_heat_cool
+      tpdo: 5
 
 output:
   - platform: template
@@ -224,6 +231,43 @@ sensor:
     entity: light_hall
     state: color_temp
 
+climate:
+  - platform: thermostat
+    id: climate_heat
+    name: "Test Thermostat"
+    sensor: sensor1
+    min_heating_off_time: 300s
+    min_heating_run_time: 300s
+    min_idle_time: 30s
+    heat_action:
+      - lambda: ''
+    idle_action:
+      - lambda: ''
+    default_preset: home
+    preset:
+      - name: home
+        default_target_temperature_low: 20 °C
+  - platform: thermostat
+    id: climate_heat_cool
+    name: "Test Thermostat Heat Cool"
+    sensor: sensor1
+    min_heating_off_time: 300s
+    min_heating_run_time: 300s
+    min_cooling_off_time: 300s
+    min_cooling_run_time: 300s
+    min_idle_time: 30s
+    heat_action:
+      - lambda: ''
+    cool_action:
+      - lambda: ''
+    idle_action:
+      - lambda: ''
+    default_preset: home
+    preset:
+      - name: home
+        default_target_temperature_low: 20 °C
+        default_target_temperature_high: 24 °C
+
 text_sensor:
   - platform: canopen
     id: remote_cover_state
@@ -266,6 +310,12 @@ binary_sensor:
       - canopen.alarm_control_panel.arm_vacation: {node: dimmer, entity: alarm_house}
       - canopen.alarm_control_panel.arm_custom_bypass: {node: dimmer, entity: alarm_house}
       - canopen.number.set: {node: dimmer, entity: setpoint, value: 21.5}
+      - canopen.climate.control: {node: dimmer, entity: hvac, mode: HEAT_COOL}
+      - canopen.climate.control:
+          node: dimmer
+          entity: hvac
+          target_temperature_low: 19.5 °C
+          target_temperature_high: !lambda 'return id(sensor1).state + 3;'
       - canopen.number.set:
           node: dimmer
           entity: setpoint

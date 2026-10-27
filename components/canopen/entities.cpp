@@ -28,6 +28,14 @@ uint32_t color_temp_to_wire(float value) { return scale_to_wire(value, 100.0, 10
 
 float color_temp_from_wire(uint32_t value) { return scale_from_wire(value, 100.0, 1000.0, 255); }
 
+// TEMPERATURE_MIN / TEMPERATURE_MAX in layout.py: 65534 steps of exactly 0.01 degC
+static const float TEMPERATURE_MIN = -327.67f;
+static const float TEMPERATURE_MAX = 327.67f;
+
+uint16_t temperature_to_wire(float value) { return scale_to_wire(value, TEMPERATURE_MIN, TEMPERATURE_MAX, 65535); }
+
+float temperature_from_wire(uint32_t value) { return scale_from_wire(value, TEMPERATURE_MIN, TEMPERATURE_MAX, 65535); }
+
 #ifdef USE_SENSOR
 void SensorEntity::setup(CanopenComponent *canopen) {
   char dc_buf[MAX_DEVICE_CLASS_LENGTH];
@@ -330,6 +338,118 @@ void CoverEntity::setup(CanopenComponent *canopen) {
       od_set_state(canopen, tilt_key, &tilt, 1);
     }
   });
+}
+#endif
+
+#ifdef USE_CLIMATE
+// layout.py CLIMATE_CAP_*
+static const uint32_t CLIMATE_CAP_CURRENT_TEMPERATURE = 1;
+static const uint32_t CLIMATE_CAP_TWO_POINT = 2;
+static const uint32_t CLIMATE_CAP_ACTION = 4;
+
+void ClimateEntity::set_state(uint32_t key, uint8_t value) {
+  if (key)
+    od_set_state(canopen, key, &value, 1);
+}
+
+void ClimateEntity::set_temperature(uint32_t key, float value) {
+  if (!key)
+    return;
+  uint16_t wire = temperature_to_wire(value);
+  od_set_state(canopen, key, &wire, 2);
+}
+
+void ClimateEntity::publish_states() {
+  set_state(mode_key, climate->mode);
+  set_temperature(target_key, climate->target_temperature);
+  set_temperature(target_low_key, climate->target_temperature_low);
+  set_temperature(target_high_key, climate->target_temperature_high);
+  set_state(action_key, climate->action);
+  set_temperature(current_key, climate->current_temperature);
+}
+
+void ClimateEntity::setup(CanopenComponent *canopen) {
+  this->canopen = canopen;
+  auto traits = climate->get_traits();
+
+  // caps (and so the OD layout) come from codegen, traits are only checked
+  uint32_t traits_caps = 0;
+  if (traits.has_feature_flags(climate::CLIMATE_SUPPORTS_CURRENT_TEMPERATURE))
+    traits_caps |= CLIMATE_CAP_CURRENT_TEMPERATURE;
+  if (traits.has_feature_flags(climate::CLIMATE_SUPPORTS_TWO_POINT_TARGET_TEMPERATURE |
+                               climate::CLIMATE_REQUIRES_TWO_POINT_TARGET_TEMPERATURE))
+    traits_caps |= CLIMATE_CAP_TWO_POINT;
+  if (traits.has_feature_flags(climate::CLIMATE_SUPPORTS_ACTION))
+    traits_caps |= CLIMATE_CAP_ACTION;
+  if (traits_caps != caps) {
+    ESP_LOGW(TAG, "climate '%s': caps from config 0x%02lx differ from traits 0x%02lx", climate->get_name().c_str(),
+             (unsigned long) caps, (unsigned long) traits_caps);
+  }
+
+  uint32_t version = 1;
+  canopen->od_add_metadata(entity_id, ENTITY_TYPE_CLIMATE | (version << 8) | (caps << 16), climate->get_name(), "", "",
+                           "");
+  canopen->od_add_min_max_metadata(entity_id, traits.get_visual_min_temperature(), traits.get_visual_max_temperature());
+  uint32_t modes = 0;
+  for (uint8_t mode = climate::CLIMATE_MODE_OFF; mode <= climate::CLIMATE_MODE_AUTO; mode++) {
+    if (traits.supports_mode((climate::ClimateMode) mode))
+      modes |= 1 << mode;
+  }
+  float step = traits.get_visual_target_temperature_step();
+  uint32_t step_raw;
+  memcpy(&step_raw, &step, sizeof(step_raw));
+  canopen->od_add_u32_metadata(entity_id, ENTITY_INDEX_CLIMATE_MODES, modes);
+  canopen->od_add_u32_metadata(entity_id, ENTITY_INDEX_CLIMATE_TEMPERATURE_STEP, step_raw);
+
+  // states in layout.py order; commands for the writable ones (mode, target temperatures) in the same order
+  uint8_t mode = climate->mode;
+  mode_key = canopen->od_add_state(entity_id, CO_TUNSIGNED8, &mode, 1, tpdo);
+  canopen->od_add_cmd(entity_id, [this](void *buffer, uint32_t size) {
+    uint8_t mode = *(uint8_t *) buffer;
+    if (mode > climate::CLIMATE_MODE_AUTO) {
+      ESP_LOGW(TAG, "climate '%s': invalid mode %u", climate->get_name().c_str(), mode);
+      return;
+    }
+    climate->make_call().set_mode((climate::ClimateMode) mode).perform();
+  });
+
+  auto add_temperature_cmd = [this](void (*set)(climate::ClimateCall &, float)) {
+    this->canopen->od_add_cmd(
+        entity_id,
+        [this, set](void *buffer, uint32_t size) {
+          float value = temperature_from_wire(*(uint16_t *) buffer);
+          if (std::isnan(value))
+            return;
+          auto call = climate->make_call();
+          set(call, value);
+          call.perform();
+        },
+        CO_TCMD16);
+  };
+
+  if (caps & CLIMATE_CAP_TWO_POINT) {
+    uint16_t low = temperature_to_wire(climate->target_temperature_low);
+    target_low_key = canopen->od_add_state(entity_id, CO_TUNSIGNED16, &low, 2, tpdo);
+    add_temperature_cmd([](climate::ClimateCall &call, float value) { call.set_target_temperature_low(value); });
+    uint16_t high = temperature_to_wire(climate->target_temperature_high);
+    target_high_key = canopen->od_add_state(entity_id, CO_TUNSIGNED16, &high, 2, tpdo);
+    add_temperature_cmd([](climate::ClimateCall &call, float value) { call.set_target_temperature_high(value); });
+  } else {
+    uint16_t target = temperature_to_wire(climate->target_temperature);
+    target_key = canopen->od_add_state(entity_id, CO_TUNSIGNED16, &target, 2, tpdo);
+    add_temperature_cmd([](climate::ClimateCall &call, float value) { call.set_target_temperature(value); });
+  }
+
+  if (caps & CLIMATE_CAP_ACTION) {
+    uint8_t action = climate->action;
+    action_key = canopen->od_add_state(entity_id, CO_TUNSIGNED8, &action, 1, tpdo);
+  }
+  if (caps & CLIMATE_CAP_CURRENT_TEMPERATURE) {
+    uint16_t current = temperature_to_wire(climate->current_temperature);
+    current_key = canopen->od_add_state(entity_id, CO_TUNSIGNED16, &current, 2, tpdo);
+  }
+
+  climate->add_on_state_callback([this](climate::Climate &) { publish_states(); });
 }
 #endif
 

@@ -146,6 +146,42 @@ EntityTypeCode: 9 (Number8, `size: 1`), 10 (Number16, `size: 2`)
 |||||||
 | 0x2002 + 0x10 * N | 0x01     | Number #N Command       | UINT8 / UINT16 | W | [scaled](#scaled-values), publishes given value as number state |
 
+## Climate
+EntityTypeCode: 11, version: 1
+
+Capabilities: bit 0 - current temperature, bit 1 - two-point target temperature (low / high set points instead of
+one), bit 2 - action. Determined at build time from the climate platform config (`thermostat`: two-point with
+`heat_action` and `cool_action`, or `heat_action`, `fan_only_action` and `fan_only_cooling: true`; `bang_bang`:
+all three; `pid`: current temperature and action; `climate_ir` based platforms: current temperature with `sensor:`),
+otherwise with the entity's `caps` option.
+
+States are added in this order, absent ones skipped, so subindices are assigned in order. Only mode and the target
+temperatures have commands (the first 2 or 3), so a writable state's subindex equals its command's subindex.
+
+Temperatures are in °C, UINT16 [scaled](#scaled-values) to -327.67..327.67: `wire = round(100 * (value + 327.67))`,
+0.01 °C steps, 65535 = unknown.
+
+| Index             | SubIndex | Object Name             | Type   | Access | Description     |
+|-------------------|----------|-------------------------|--------|:------:|-|
+| 0x2000 + 0x10 * N | 0x07     | Climate #N min_temp     | REAL32 | R      | visual min temperature (°C) |
+|                   | 0x08     | Climate #N max_temp     | REAL32 | R      | visual max temperature (°C) |
+|                   | 0x09     | Climate #N modes        | UINT32 | R      | supported modes, bit n = mode code n |
+|                   | 0x0A     | Climate #N temp_step    | REAL32 | R      | visual target temperature step (°C) |
+|||||||
+| 0x2001 + 0x10 * N | 0x01     | Climate #N Mode         | UINT8  | R      | 0 - off, 1 - heat_cool, 2 - cool, 3 - heat, 4 - fan_only, 5 - dry, 6 - auto |
+|                   | 0x02     | Climate #N TargetTemp   | UINT16 | R      | single set point only |
+|                   | 0x02     | Climate #N TargetTempLow  | UINT16 | R    | two-point only |
+|                   | 0x03     | Climate #N TargetTempHigh | UINT16 | R    | two-point only |
+|                   | next     | Climate #N Action       | UINT8  | R      | 0 - off, 2 - cooling, 3 - heating, 4 - idle, 5 - drying, 6 - fan, 7 - defrosting |
+|                   | next     | Climate #N CurrentTemp  | UINT16 | R      | |
+|||||||
+| 0x2002 + 0x10 * N | 0x01     | Climate #N SetMode      | UINT8  | W      | mode code as above |
+|                   | 0x02     | Climate #N SetTargetTemp | UINT16 | W     | single set point only, unknown (65535) ignored |
+|                   | 0x02     | Climate #N SetTargetTempLow  | UINT16 | W  | two-point only |
+|                   | 0x03     | Climate #N SetTargetTempHigh | UINT16 | W  | two-point only |
+
+A two-point climate with all capabilities has 8 bytes of states, a whole TPDO.
+
 ## Alarm Control Panel
 
 EntityTypeCode: 16

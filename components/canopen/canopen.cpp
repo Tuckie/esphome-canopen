@@ -249,6 +249,10 @@ void CanopenComponent::od_add_min_max_metadata(uint32_t entity_id, float min_val
   od.add_update(CO_KEY(index, ENTITY_INDEX_SENSOR_MAX_VALUE, CO_OBJ_D___R_), CO_TUNSIGNED32, (CO_DATA) *max_value_ptr);
 }
 
+void CanopenComponent::od_add_u32_metadata(uint32_t entity_id, uint8_t sub, uint32_t value) {
+  od.add_update(CO_KEY(ENTITY_INDEX(entity_id), sub, CO_OBJ_D___R_), CO_TUNSIGNED32, (CO_DATA) value);
+}
+
 uint32_t CanopenComponent::od_add_state(uint32_t entity_id, const CO_OBJ_TYPE *type, void *state, uint8_t size,
                                         TPDO &tpdo) {
   uint32_t pdo_mask = tpdo.number >= 0 ? (tpdo.immediate ? CO_OBJ___A___ : 0) | CO_OBJ____P__ : 0;

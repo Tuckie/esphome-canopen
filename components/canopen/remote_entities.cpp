@@ -10,6 +10,8 @@ static const char *const COVER_STATES[] = {"open", "opening", "closed", "closing
 static const char *const ALARM_STATES[] = {
     "disarmed", "armed_home", "armed_away", "armed_night", "armed_vacation", "armed_custom_bypass",
     "pending",  "arming",     "disarming",  "triggered"};
+static const char *const CLIMATE_MODES[] = {"off", "heat_cool", "cool", "heat", "fan_only", "dry", "auto"};
+static const char *const CLIMATE_ACTIONS[] = {"off", "", "cooling", "heating", "idle", "drying", "fan", "defrosting"};
 
 float RemoteStateFormat::decode(uint32_t raw) const {
   switch (kind) {
@@ -26,7 +28,9 @@ float RemoteStateFormat::decode(uint32_t raw) const {
         return value;
       }
       return scale_from_wire(raw, min_value, max_value, size == 1 ? 255 : 65535);
-    default:  // cover / alarm state codes
+    case REMOTE_STATE_TEMPERATURE:
+      return temperature_from_wire(raw);
+    default:  // cover / alarm / climate state codes
       return raw;
   }
 }
@@ -42,6 +46,14 @@ std::string RemoteStateFormat::to_string(uint32_t raw) const {
     case REMOTE_STATE_ALARM_STATE:
       if (raw < sizeof(ALARM_STATES) / sizeof(ALARM_STATES[0]))
         return ALARM_STATES[raw];
+      break;
+    case REMOTE_STATE_CLIMATE_MODE:
+      if (raw < sizeof(CLIMATE_MODES) / sizeof(CLIMATE_MODES[0]))
+        return CLIMATE_MODES[raw];
+      break;
+    case REMOTE_STATE_CLIMATE_ACTION:
+      if (raw < sizeof(CLIMATE_ACTIONS) / sizeof(CLIMATE_ACTIONS[0]) && CLIMATE_ACTIONS[raw][0])
+        return CLIMATE_ACTIONS[raw];
       break;
   }
   return std::to_string(raw);

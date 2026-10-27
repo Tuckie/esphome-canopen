@@ -171,3 +171,53 @@ def test_state_kinds(domain, caps, size, kinds):
     assert layout.entity_state_kinds(domain, caps, size) == kinds
     assert layout.entity_states(domain, caps, size) == [(n, s) for n, s, _ in kinds]
     assert all(kind in layout.KIND_CODES for _, _, kind in kinds)
+
+
+@pytest.mark.parametrize(
+    "platform, conf, caps",
+    [
+        ("thermostat", {"heat_action": []}, 5),
+        ("thermostat", {"cool_action": []}, 5),
+        ("thermostat", {"heat_action": [], "cool_action": []}, 7),
+        ("thermostat", {"heat_action": [], "fan_only_action": []}, 5),
+        ("thermostat", {"heat_action": [], "fan_only_action": [], "fan_only_cooling": True}, 7),
+        ("bang_bang", {}, 7),
+        ("pid", {}, 5),
+        ("coolix", {}, 0),
+        ("coolix", {"sensor": "room"}, 1),
+    ],
+)
+def test_climate_platforms(platform, conf, caps):
+    assert layout.entity_caps(layout.DOMAIN_CLIMATE, {"platform": platform, **conf}) == caps
+
+
+@pytest.mark.parametrize(
+    "caps, states",
+    [
+        (0, [("mode", 1), ("target_temperature", 2)]),
+        (5, [("mode", 1), ("target_temperature", 2), ("action", 1), ("current_temperature", 2)]),
+        (
+            7,
+            [
+                ("mode", 1),
+                ("target_temperature_low", 2),
+                ("target_temperature_high", 2),
+                ("action", 1),
+                ("current_temperature", 2),
+            ],
+        ),
+    ],
+)
+def test_climate_states(caps, states):
+    assert layout.entity_states(layout.DOMAIN_CLIMATE, caps) == states
+
+
+def test_climate_caps_override_and_unknown_platform():
+    assert layout.entity_caps(layout.DOMAIN_CLIMATE, {"platform": "x"}, ["two_point", "action"]) == 6
+    with pytest.raises(layout.LayoutError, match="caps: \\[...\\]"):
+        layout.entity_caps(layout.DOMAIN_CLIMATE, {"platform": "midea"})
+
+
+def test_temperature_range_has_centidegree_steps():
+    # 65534 steps over the range (65535 = unknown): exactly 0.01 degC per step
+    assert round((layout.TEMPERATURE_MAX - layout.TEMPERATURE_MIN) / 65534, 9) == 0.01

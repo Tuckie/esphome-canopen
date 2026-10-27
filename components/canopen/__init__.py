@@ -121,7 +121,7 @@ ENTITY_SCHEMA = cv.Schema(
         cv.Optional("max_value"): cv.float_,
         cv.Optional("tpdo"): cv.Any(cv.int_, TPDO_SCHEMA),
         cv.Optional("rpdo"): cv.ensure_list(RPDO_SCHEMA),
-        # light / cover capabilities, for platforms not known to layout.py
+        # light / cover / climate capabilities, for platforms not known to layout.py
         cv.Optional("caps"): cv.ensure_list(cv.string),
     }
 )
@@ -276,6 +276,7 @@ ENTITY_DOMAINS = [
         cg.esphome_ns.namespace("alarm_control_panel").class_("AlarmControlPanel"),
         layout.DOMAIN_ALARM,
     ),
+    (cg.esphome_ns.namespace("climate").class_("Climate"), layout.DOMAIN_CLIMATE),
 ]
 
 
@@ -1078,6 +1079,60 @@ for _action, _code in (
         (layout.DOMAIN_ALARM,),
         _const_writes(_code),
     )
+
+# climate modes, see Climate in OBJECT_DICTIONARY.md (esphome climate::ClimateMode)
+CLIMATE_MODES = {
+    "OFF": 0,
+    "HEAT_COOL": 1,
+    "COOL": 2,
+    "HEAT": 3,
+    "FAN_ONLY": 4,
+    "DRY": 5,
+    "AUTO": 6,
+}
+
+
+def _temperature_write(target, state, value):
+    return _write(
+        target.cmd(state),
+        value,
+        size=2,
+        encoding=ENC_SCALED,
+        min_value=layout.TEMPERATURE_MIN,
+        max_value=layout.TEMPERATURE_MAX,
+    )
+
+
+def _climate_control_writes(config, target):
+    writes = []
+    # temperatures first, so the mode change sees the new set points
+    for option in ("target_temperature", "target_temperature_low", "target_temperature_high"):
+        if option in config:
+            writes.append(_temperature_write(target, option, config[option]))
+    if "mode" in config:
+        mode = config["mode"]
+        if not isinstance(mode, Lambda):  # a lambda returns the mode code
+            mode = CLIMATE_MODES[str(mode).upper()]
+        writes.append(_write(target.cmd("mode"), mode))
+    if not writes:
+        raise cv.Invalid(
+            "canopen.climate.control: set 'mode', 'target_temperature', "
+            "'target_temperature_low' or 'target_temperature_high'"
+        )
+    return writes
+
+
+_remote_action(
+    "canopen.climate.control",
+    (layout.DOMAIN_CLIMATE,),
+    _climate_control_writes,
+    {
+        cv.Optional("mode"): cv.templatable(cv.enum(CLIMATE_MODES, upper=True)),
+        cv.Optional("target_temperature"): cv.templatable(cv.temperature),
+        cv.Optional("target_temperature_low"): cv.templatable(cv.temperature),
+        cv.Optional("target_temperature_high"): cv.templatable(cv.temperature),
+    },
+)
 
 _remote_action(
     "canopen.number.set",

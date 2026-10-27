@@ -26,6 +26,9 @@ enum RemoteStateKind : uint8_t {
   REMOTE_STATE_COVER_STATE = 3,
   REMOTE_STATE_ALARM_STATE = 4,
   REMOTE_STATE_VALUE = 5,
+  REMOTE_STATE_TEMPERATURE = 6,
+  REMOTE_STATE_CLIMATE_MODE = 7,
+  REMOTE_STATE_CLIMATE_ACTION = 8,
 };
 
 // decoding of a raw remote state slot value

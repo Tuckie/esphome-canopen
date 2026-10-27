@@ -19,6 +19,7 @@ ENTITY_DOMAINS = {
     layout.DOMAIN_LIGHT,
     layout.DOMAIN_COVER,
     layout.DOMAIN_ALARM,
+    layout.DOMAIN_CLIMATE,
 }
 
 _cache = {}

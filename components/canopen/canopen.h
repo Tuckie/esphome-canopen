@@ -17,6 +17,7 @@ const int8_t ENTITY_TYPE_SENSOR_UINT16 = 7;
 const int8_t ENTITY_TYPE_NUMBER = 8;
 const int8_t ENTITY_TYPE_NUMBER_UINT8 = 9;
 const int8_t ENTITY_TYPE_NUMBER_UINT16 = 10;
+const int8_t ENTITY_TYPE_CLIMATE = 11;
 const int8_t ENTITY_TYPE_ALARM = 16;
 
 const uint8_t ENTITY_TYPE_CAN_STATUS = 254;
@@ -28,6 +29,9 @@ const uint8_t ENTITY_INDEX_STATE_CLASS = 4;
 
 const uint8_t ENTITY_INDEX_SENSOR_MIN_VALUE = 7;
 const uint8_t ENTITY_INDEX_SENSOR_MAX_VALUE = 8;
+// climate: supported modes (bit n = climate::ClimateMode n), target temperature step
+const uint8_t ENTITY_INDEX_CLIMATE_MODES = 9;
+const uint8_t ENTITY_INDEX_CLIMATE_TEMPERATURE_STEP = 10;
 
 const int32_t PROPERTY_STATE0 = 0;
 const int32_t PROPERTY_STATE1 = 1;
@@ -274,6 +278,12 @@ class CanopenComponent : public Component {
   }
 #endif
 
+#ifdef USE_CLIMATE
+  void add_entity(esphome::climate::Climate *climate, uint32_t entity_id, TPDO tpdo, uint32_t caps) {
+    entities.push_back(new ClimateEntity(climate, entity_id, tpdo, caps));
+  }
+#endif
+
 #ifdef USE_ALARM_CONTROL_PANEL
   void add_entity(esphome::alarm_control_panel::AlarmControlPanel *alarm, uint32_t entity_id, TPDO tpdo) {
     entities.push_back(new AlarmEntity(alarm, entity_id, tpdo));
@@ -283,6 +293,8 @@ class CanopenComponent : public Component {
   void od_add_metadata(uint32_t entity_id, uint32_t type, const std::string &name, const std::string &device_class,
                        const std::string &unit, const std::string &state_class);
   void od_add_min_max_metadata(uint32_t entity_id, float min_value, float max_value);
+  // UINT32 metadata object 0x2000 + 0x10 * N, sub (REAL32 values as raw bits)
+  void od_add_u32_metadata(uint32_t entity_id, uint8_t sub, uint32_t value);
 
   void od_setup_tpdo(uint32_t index, uint8_t sub_index, uint8_t size, TPDO &tpdo);
   uint32_t od_add_state(uint32_t entity_id, const CO_OBJ_TYPE *type, void *state, uint8_t size, TPDO &tpdo);

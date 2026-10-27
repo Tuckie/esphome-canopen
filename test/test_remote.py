@@ -91,6 +91,20 @@ def test_remote_node_kinds(node):
     assert node.state_names(entity_id="light_table") == ["state", "brightness"]
 
 
+def test_remote_node_climate(node):
+    assert node.state_names(entity_id="hvac") == [
+        "mode",
+        "target_temperature_low",
+        "target_temperature_high",
+        "action",
+        "current_temperature",
+    ]
+    current = node.state(entity_id="hvac", state="current_temperature")
+    assert (current["tpdo"], current["offset"], current["size"], current["kind"]) == (4, 6, 2, "temperature")
+    assert node.state(entity_id="hvac")["kind"] == "climate_mode"
+    assert node.state(entity_id="hvac", state="action")["kind"] == "climate_action"
+
+
 def test_remote_node_errors(node):
     with pytest.raises(remote.RemoteError, match="not exposed"):
         node.state(entity_id="out1")
@@ -194,6 +208,15 @@ def test_actions(raw_config):
     assert [(w["size"], w["encoding"], w["min_value"], w["max_value"]) for w in number["_writes"]] == [
         (1, canopen.ENC_SCALED, 10, 30)
     ]
+    climate = _validate(
+        "canopen.climate.control", entity="hvac", mode="heat_cool", target_temperature_high="25°C"
+    )
+    assert [(w["cmd"], w["size"], w["encoding"], w["value"]) for w in climate["_writes"]] == [
+        (2, 2, canopen.ENC_SCALED, 25.0),
+        (0, 1, canopen.ENC_RAW, 1),
+    ]
+    assert climate["_writes"][0]["min_value"] == layout.TEMPERATURE_MIN
+
     # commands only: the remote entity doesn't need a TPDO
     assert _validate("canopen.switch.turn_on", entity="pump")["index"] == 9
 
@@ -207,6 +230,9 @@ def test_actions(raw_config):
         ("canopen.switch.toggle", {"entity": "pump"}, "not sent in any TPDO"),
         ("canopen.cover.control", {"entity": "cover_hall"}, "set 'stop', 'position' or 'tilt'"),
         ("canopen.number.set", {"entity": "temperature", "value": 1}, "is a sensor, expected number"),
+        ("canopen.climate.control", {"entity": "hvac"}, "set 'mode', 'target_temperature'"),
+        ("canopen.climate.control", {"entity": "hvac", "target_temperature": 21}, "has no target_temperature"),
+        ("canopen.climate.control", {"entity": "cover_hall", "mode": "HEAT"}, "is a cover, expected climate"),
         ("canopen.cover.stop", {"entity": "nope"}, "not exposed"),
         ("canopen.cover.stop", {"node": "unknown", "entity": "x"}, "Unknown node 'unknown'"),
     ],

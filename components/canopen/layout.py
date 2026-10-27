@@ -15,6 +15,7 @@ DOMAIN_SWITCH = "switch"
 DOMAIN_LIGHT = "light"
 DOMAIN_COVER = "cover"
 DOMAIN_ALARM = "alarm_control_panel"
+DOMAIN_CLIMATE = "climate"
 
 TPDO_COUNT = 8
 
@@ -27,6 +28,11 @@ LIGHT_CAP_COLOR_TEMPERATURE = 4
 COVER_CAP_POSITION = 1
 COVER_CAP_TILT = 2
 
+# Climate capability bits
+CLIMATE_CAP_CURRENT_TEMPERATURE = 1
+CLIMATE_CAP_TWO_POINT = 2
+CLIMATE_CAP_ACTION = 4
+
 CAPS_NAMES = {
     DOMAIN_LIGHT: {
         "on_off": LIGHT_CAP_ON_OFF,
@@ -36,6 +42,11 @@ CAPS_NAMES = {
     DOMAIN_COVER: {
         "position": COVER_CAP_POSITION,
         "tilt": COVER_CAP_TILT,
+    },
+    DOMAIN_CLIMATE: {
+        "current_temperature": CLIMATE_CAP_CURRENT_TEMPERATURE,
+        "two_point": CLIMATE_CAP_TWO_POINT,
+        "action": CLIMATE_CAP_ACTION,
     },
 }
 
@@ -89,6 +100,60 @@ COVER_PLATFORM_CAPS = {
     ),
     # third-party: https://github.com/bruxy70/Venetian-Blinds-Control
     "venetian_blinds": lambda conf: COVER_CAP_POSITION | COVER_CAP_TILT,
+}
+
+
+def _thermostat_caps(conf):
+    """thermostat: two-point as decided in its to_code() (thermostat/climate.py)."""
+    two_point = "heat_action" in conf and (
+        "cool_action" in conf
+        or (flag(conf, "fan_only_cooling") and "fan_only_action" in conf)
+    )
+    return (
+        CLIMATE_CAP_CURRENT_TEMPERATURE
+        | CLIMATE_CAP_ACTION
+        | (CLIMATE_CAP_TWO_POINT if two_point else 0)
+    )
+
+
+def _climate_ir_caps(conf):
+    """climate_ir based platforms: current temperature only with `sensor:`."""
+    return CLIMATE_CAP_CURRENT_TEMPERATURE if "sensor" in conf else 0
+
+
+# Climate capabilities of climate platforms, mirroring each platform's traits().
+CLIMATE_PLATFORM_CAPS = {
+    "thermostat": _thermostat_caps,
+    "bang_bang": lambda conf: CLIMATE_CAP_CURRENT_TEMPERATURE
+    | CLIMATE_CAP_TWO_POINT
+    | CLIMATE_CAP_ACTION,
+    "pid": lambda conf: CLIMATE_CAP_CURRENT_TEMPERATURE | CLIMATE_CAP_ACTION,
+    **{
+        platform: _climate_ir_caps
+        for platform in (
+            "ballu",
+            "climate_ir_lg",
+            "coolix",
+            "daikin",
+            "daikin_arc",
+            "daikin_brc",
+            "delonghi",
+            "emmeti",
+            "fujitsu_general",
+            "gree",
+            "heatpumpir",
+            "hitachi_ac344",
+            "hitachi_ac424",
+            "midea_ir",
+            "mitsubishi",
+            "noblex",
+            "tcl112",
+            "toshiba",
+            "whirlpool",
+            "whynter",
+            "zhlt01",
+        )
+    },
 }
 
 
@@ -156,7 +221,7 @@ def caps_from_names(domain, names):
 
 
 def entity_caps(domain, platform_config, caps_override=None):
-    """Capability bits of a light / cover entity, None for other domains.
+    """Capability bits of a light / cover / climate entity, None for other domains.
 
     `caps_override` (list of capability names from the `caps:` option) takes
     precedence; otherwise caps are derived from the platform config.
@@ -173,7 +238,8 @@ def entity_caps(domain, platform_config, caps_override=None):
         if modes is None:
             raise LayoutError(_unknown_platform_msg(domain, platform))
         return light_caps_from_color_modes(modes(platform_config))
-    caps = COVER_PLATFORM_CAPS.get(platform)
+    platform_caps = CLIMATE_PLATFORM_CAPS if domain == DOMAIN_CLIMATE else COVER_PLATFORM_CAPS
+    caps = platform_caps.get(platform)
     if caps is None:
         raise LayoutError(_unknown_platform_msg(domain, platform))
     return caps(platform_config)
@@ -194,6 +260,13 @@ KIND_COLOR_TEMP = "color_temp"  # UINT8 0..254 -> 100..1000 mireds
 KIND_COVER_STATE = "cover_state"  # 0 open, 1 opening, 2 closed, 3 closing
 KIND_ALARM_STATE = "alarm_state"  # 0..9
 KIND_VALUE = "value"  # sensor / number: REAL32, or UINT8 / UINT16 scaled to min_value..max_value
+KIND_TEMPERATURE = "temperature"  # UINT16 scaled to -327.67..327.67 degC (0.01 degC steps), 65535 unknown
+KIND_CLIMATE_MODE = "climate_mode"  # 0 off, 1 heat_cool, 2 cool, 3 heat, 4 fan_only, 5 dry, 6 auto
+KIND_CLIMATE_ACTION = "climate_action"  # 0 off, 2 cooling, 3 heating, 4 idle, 5 drying, 6 fan, 7 defrosting
+
+# fixed range of KIND_TEMPERATURE: (wire = round(100 * (value + 327.67)))
+TEMPERATURE_MIN = -327.67
+TEMPERATURE_MAX = 327.67
 
 # C++ RemoteStateKind (remote_entities.h)
 KIND_CODES = {
@@ -203,6 +276,9 @@ KIND_CODES = {
     KIND_COVER_STATE: 3,
     KIND_ALARM_STATE: 4,
     KIND_VALUE: 5,
+    KIND_TEMPERATURE: 6,
+    KIND_CLIMATE_MODE: 7,
+    KIND_CLIMATE_ACTION: 8,
 }
 
 
@@ -211,6 +287,8 @@ def entity_state_kinds(domain, caps=None, size=None):
 
     Must match the order of od_add_state() calls in entities.cpp. Commands are
     added in the same order, so a state's position is also its command index.
+    Read-only states (climate action / current temperature) come last and have
+    no command.
     """
     if domain in (DOMAIN_SENSOR, DOMAIN_NUMBER):
         size = 4 if size is None else size
@@ -234,6 +312,18 @@ def entity_state_kinds(domain, caps=None, size=None):
             states.append(("position", 1, KIND_PERCENTAGE))
         if caps & COVER_CAP_TILT:
             states.append(("tilt", 1, KIND_PERCENTAGE))
+        return states
+    if domain == DOMAIN_CLIMATE:
+        states = [("mode", 1, KIND_CLIMATE_MODE)]
+        if caps & CLIMATE_CAP_TWO_POINT:
+            states.append(("target_temperature_low", 2, KIND_TEMPERATURE))
+            states.append(("target_temperature_high", 2, KIND_TEMPERATURE))
+        else:
+            states.append(("target_temperature", 2, KIND_TEMPERATURE))
+        if caps & CLIMATE_CAP_ACTION:
+            states.append(("action", 1, KIND_CLIMATE_ACTION))
+        if caps & CLIMATE_CAP_CURRENT_TEMPERATURE:
+            states.append(("current_temperature", 2, KIND_TEMPERATURE))
         return states
     raise LayoutError(f"Unsupported entity domain: {domain}")
 

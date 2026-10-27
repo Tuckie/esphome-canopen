@@ -54,14 +54,16 @@ may switch a light on even if it's already on, see [#32](https://github.com/mrk-
 * `node` (Required, string): name of the node in `remote_nodes`
 * `entity` (Required, string): id of the remote entity (in the remote node's `canopen.entities`, with `tpdo`)
 * `state` (Optional, string): remote entity state, defaults to the first one: `state` (light, switch, binary sensor,
-  cover, alarm) or `value` (sensor, number). Others: light `brightness`, `color_temp`; cover `position`, `tilt`
+  cover, alarm), `mode` (climate) or `value` (sensor, number). Others: light `brightness`, `color_temp`; cover
+  `position`, `tilt`; climate `target_temperature` or `target_temperature_low` / `target_temperature_high`,
+  `action`, `current_temperature`
 * all options of the entity type (`name`, `filters`, `on_value`, ...). Without `name` the entity is internal.
 
 | Platform | Remote states | Value |
 |---|---|---|
 | `binary_sensor` | light / switch / binary sensor `state` | |
-| `sensor` | any | `state`: 0 / 1; brightness, position, tilt: 0..1; `color_temp`: mireds; cover / alarm `state`: code (see [OBJECT_DICTIONARY.md](../OBJECT_DICTIONARY.md)); sensor / number `value` |
-| `text_sensor` | light / switch / binary sensor `state`, cover `state`, alarm `state` | `on` / `off`; `open`, `opening`, `closed`, `closing`; `disarmed`, `armed_home`, ... |
+| `sensor` | any | `state`: 0 / 1; brightness, position, tilt: 0..1; `color_temp`: mireds; cover / alarm `state`, climate `mode` / `action`: code (see [OBJECT_DICTIONARY.md](../OBJECT_DICTIONARY.md)); sensor / number `value`; climate temperatures: °C |
+| `text_sensor` | light / switch / binary sensor `state`, cover `state`, alarm `state`, climate `mode` / `action` | `on` / `off`; `open`, `opening`, `closed`, `closing`; `disarmed`, `armed_home`, ...; `off`, `heat`, `heat_cool`, ...; `idle`, `heating`, ... |
 
 A `platform: canopen` entity can be listed in `canopen.entities` (without `rpdo`), e.g. to see the remote state
 through can2mqtt while debugging.
@@ -81,6 +83,7 @@ read the remote state from a remote state slot, so the remote entity needs `tpdo
 | `canopen.cover.control` | cover | `stop` (bool), `position`, `tilt` (percentage, templatable) |
 | `canopen.alarm_control_panel.disarm`, `.arm_away`, `.arm_home`, `.arm_night`, `.arm_vacation`, `.arm_custom_bypass` | alarm control panel | |
 | `canopen.number.set` | number | `value` (Required, templatable float), scaled as the remote number |
+| `canopen.climate.control` | climate | `mode` (`OFF`, `HEAT_COOL`, `COOL`, `HEAT`, `FAN_ONLY`, `DRY`, `AUTO`; a lambda returns the [mode code](../OBJECT_DICTIONARY.md#climate)), `target_temperature`, or `target_temperature_low` / `target_temperature_high` for two-point climates (temperature, templatable); at least one |
 
 `canopen.entity_cmd` writes a raw command of a remote entity:
 * `node` + `entity` / `index` (remote node from `remote_nodes`), or `node_id` + `index`

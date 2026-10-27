@@ -50,6 +50,12 @@ class Cover;
 }
 #endif
 
+#ifdef USE_CLIMATE
+namespace climate {
+class Climate;
+}
+#endif
+
 }  // namespace esphome
 
 namespace esphome {
@@ -67,6 +73,9 @@ uint32_t percentage_to_wire(float state);
 float percentage_from_wire(uint32_t value);
 uint32_t color_temp_to_wire(float value);
 float color_temp_from_wire(uint32_t value);
+// climate temperatures: UINT16, 0.01 degC steps over -327.67..327.67, 65535 unknown
+uint16_t temperature_to_wire(float value);
+float temperature_from_wire(uint32_t value);
 
 class CanopenComponent;
 
@@ -175,6 +184,32 @@ class CoverEntity : public BaseCanopenEntity {
   CoverEntity(esphome::cover::Cover *cover, uint32_t entity_id, TPDO tpdo, uint32_t caps)
       : BaseCanopenEntity(entity_id, tpdo) {
     this->cover = cover;
+    this->caps = caps;
+  }
+  void setup(CanopenComponent *canopen) override;
+};
+#endif
+
+#ifdef USE_CLIMATE
+class ClimateEntity : public BaseCanopenEntity {
+  CanopenComponent *canopen{nullptr};
+  uint32_t mode_key{0};
+  uint32_t target_key{0};
+  uint32_t target_low_key{0};
+  uint32_t target_high_key{0};
+  uint32_t action_key{0};
+  uint32_t current_key{0};
+
+  void publish_states();
+  void set_state(uint32_t key, uint8_t value);
+  void set_temperature(uint32_t key, float value);
+
+ public:
+  esphome::climate::Climate *climate;
+  uint32_t caps;  // from codegen (layout.py), not from traits
+  ClimateEntity(esphome::climate::Climate *climate, uint32_t entity_id, TPDO tpdo, uint32_t caps)
+      : BaseCanopenEntity(entity_id, tpdo) {
+    this->climate = climate;
     this->caps = caps;
   }
   void setup(CanopenComponent *canopen) override;

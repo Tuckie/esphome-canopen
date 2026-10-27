@@ -1,4 +1,4 @@
-"""`text_sensor: - platform: canopen`: cover / alarm state or on / off of a remote node's entity."""
+"""`text_sensor: - platform: canopen`: cover / alarm / climate mode / climate action state or on / off of a remote node's entity."""
 
 import esphome.config_validation as cv
 from esphome.components import text_sensor
@@ -15,7 +15,13 @@ CONFIG_SCHEMA = cv.All(
     ),
     validate_remote_state(
         "text_sensor",
-        [layout.KIND_BOOL, layout.KIND_COVER_STATE, layout.KIND_ALARM_STATE],
+        [
+            layout.KIND_BOOL,
+            layout.KIND_COVER_STATE,
+            layout.KIND_ALARM_STATE,
+            layout.KIND_CLIMATE_MODE,
+            layout.KIND_CLIMATE_ACTION,
+        ],
     ),
 )
 

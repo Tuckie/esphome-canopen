@@ -54,6 +54,9 @@ canopen:
       tpdo: 3
     - index: 9
       id: pump             # no tpdo: commands only
+    - index: 10
+      id: hvac             # two-point thermostat: mode, low, high, action, current
+      tpdo: 4
 
 output:
   - platform: template
@@ -92,6 +95,28 @@ sensor:
     id: temperature
     name: "Temperature"
     lambda: 'return 21.5;'
+
+climate:
+  - platform: thermostat
+    id: hvac
+    name: "HVAC"
+    sensor: temperature
+    min_heating_off_time: 300s
+    min_heating_run_time: 300s
+    min_cooling_off_time: 300s
+    min_cooling_run_time: 300s
+    min_idle_time: 30s
+    heat_action:
+      - lambda: ''
+    cool_action:
+      - lambda: ''
+    idle_action:
+      - lambda: ''
+    default_preset: home
+    preset:
+      - name: home
+        default_target_temperature_low: 20 °C
+        default_target_temperature_high: 24 °C
 
 cover:
   - platform: template
