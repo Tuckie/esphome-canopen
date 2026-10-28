@@ -55,8 +55,8 @@ canopen:
     - index: 9
       id: pump             # no tpdo: commands only
     - index: 10
-      id: hvac             # two-point thermostat: mode, low, high, action, current
-      tpdo: 4
+      id: hvac             # full thermostat, 12 bytes of states spread over TPDO 4 and 5
+      tpdo: [4, 5]
 
 output:
   - platform: template
@@ -95,13 +95,18 @@ sensor:
     id: temperature
     name: "Temperature"
     lambda: 'return 21.5;'
+  - platform: template
+    id: humidity
+    lambda: 'return 45;'
 
 climate:
   - platform: thermostat
     id: hvac
     name: "HVAC"
     sensor: temperature
+    humidity_sensor: humidity
     min_heating_off_time: 300s
+    min_fan_mode_switching_time: 15s
     min_heating_run_time: 300s
     min_cooling_off_time: 300s
     min_cooling_run_time: 300s
@@ -112,11 +117,26 @@ climate:
       - lambda: ''
     idle_action:
       - lambda: ''
+    fan_mode_auto_action:
+      - lambda: ''
+    fan_mode_high_action:
+      - lambda: ''
+    swing_off_action:
+      - lambda: ''
+    swing_vertical_action:
+      - lambda: ''
+    humidity_control_dehumidify_action:
+      - lambda: ''
+    humidity_control_off_action:
+      - lambda: ''
     default_preset: home
     preset:
       - name: home
         default_target_temperature_low: 20 °C
         default_target_temperature_high: 24 °C
+      - name: Night Setback
+        default_target_temperature_low: 16 °C
+        default_target_temperature_high: 26 °C
 
 cover:
   - platform: template

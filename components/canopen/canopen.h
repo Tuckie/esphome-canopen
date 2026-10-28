@@ -29,9 +29,16 @@ const uint8_t ENTITY_INDEX_STATE_CLASS = 4;
 
 const uint8_t ENTITY_INDEX_SENSOR_MIN_VALUE = 7;
 const uint8_t ENTITY_INDEX_SENSOR_MAX_VALUE = 8;
-// climate: supported modes (bit n = climate::ClimateMode n), target temperature step
-const uint8_t ENTITY_INDEX_CLIMATE_MODES = 9;
-const uint8_t ENTITY_INDEX_CLIMATE_TEMPERATURE_STEP = 10;
+// climate metadata, see Climate in OBJECT_DICTIONARY.md
+const uint8_t ENTITY_INDEX_CLIMATE_MODES = 9;              // UINT32, bit n = mode code n
+const uint8_t ENTITY_INDEX_CLIMATE_TEMPERATURE_STEP = 10;  // REAL32
+const uint8_t ENTITY_INDEX_CLIMATE_FAN_MODES = 11;         // UINT32, bit n = fan mode code n
+const uint8_t ENTITY_INDEX_CLIMATE_SWING_MODES = 12;       // UINT32, bit n = swing mode code n
+const uint8_t ENTITY_INDEX_CLIMATE_PRESETS = 13;           // UINT32, bit n = preset code n
+const uint8_t ENTITY_INDEX_CLIMATE_CUSTOM_FAN_MODES = 14;  // string, names separated by '\n'
+const uint8_t ENTITY_INDEX_CLIMATE_CUSTOM_PRESETS = 15;    // string, names separated by '\n'
+const uint8_t ENTITY_INDEX_CLIMATE_MIN_HUMIDITY = 16;      // REAL32
+const uint8_t ENTITY_INDEX_CLIMATE_MAX_HUMIDITY = 17;      // REAL32
 
 const int32_t PROPERTY_STATE0 = 0;
 const int32_t PROPERTY_STATE1 = 1;
@@ -293,6 +300,8 @@ class CanopenComponent : public Component {
   void od_add_metadata(uint32_t entity_id, uint32_t type, const std::string &name, const std::string &device_class,
                        const std::string &unit, const std::string &state_class);
   void od_add_min_max_metadata(uint32_t entity_id, float min_value, float max_value);
+  // TPDO of each state of an entity spread over several TPDOs (after add_entity())
+  void set_state_tpdos(uint32_t entity_id, std::vector<TPDO> tpdos);
   // UINT32 metadata object 0x2000 + 0x10 * N, sub (REAL32 values as raw bits)
   void od_add_u32_metadata(uint32_t entity_id, uint8_t sub, uint32_t value);
 

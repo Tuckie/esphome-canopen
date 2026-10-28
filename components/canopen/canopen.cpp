@@ -60,11 +60,27 @@ CO_OBJ_STR *od_string(const std::string &str) {
   return od_str;
 }
 
+uint32_t BaseCanopenEntity::add_state(CanopenComponent *canopen, const CO_OBJ_TYPE *type, void *state, uint8_t size) {
+  TPDO state_tpdo = this->state_tpdo(++num_states_);
+  return canopen->od_add_state(entity_id, type, state, size, state_tpdo);
+}
+
 void BaseCanopenEntity::od_set_state(CanopenComponent *canopen, uint32_t key, void *state, uint8_t size) {
   canopen->od_set_state(key, state, size);
-  if (tpdo.number >= 0 && !tpdo.immediate) {
-    canopen->dirty_tpdo_mask |= (1 << tpdo.number);
+  TPDO state_tpdo = this->state_tpdo(CO_GET_SUB(key));
+  if (state_tpdo.number >= 0 && !state_tpdo.immediate) {
+    canopen->dirty_tpdo_mask |= (1 << state_tpdo.number);
   }
+}
+
+void CanopenComponent::set_state_tpdos(uint32_t entity_id, std::vector<TPDO> tpdos) {
+  for (auto *entity : entities) {
+    if (entity->entity_id == entity_id) {
+      entity->state_tpdos = std::move(tpdos);
+      return;
+    }
+  }
+  ESP_LOGE(TAG, "set_state_tpdos: entity %lu not found", (unsigned long) entity_id);
 }
 
 /* Each software timer needs some memory for managing
@@ -507,7 +523,6 @@ void CanopenComponent::setup() {
   ESP_LOGI(TAG, "high frequency loop: %d", hfq_requester.is_high_frequency());
   ESP_LOGD(TAG, "CO_TPDO_N: %d", CO_TPDO_N);
   ESP_LOGD(TAG, "CO_RPDO_N: %d", CO_RPDO_N);
-
 
 #ifdef USE_ESP32
   twai_reconfigure_alerts(TWAI_ALERT_ABOVE_ERR_WARN | TWAI_ALERT_ERR_PASS | TWAI_ALERT_BUS_OFF, NULL);

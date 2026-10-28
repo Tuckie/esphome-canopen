@@ -183,8 +183,18 @@ def test_state_kinds(domain, caps, size, kinds):
         ("thermostat", {"heat_action": [], "fan_only_action": [], "fan_only_cooling": True}, 7),
         ("bang_bang", {}, 7),
         ("pid", {}, 5),
-        ("coolix", {}, 0),
-        ("coolix", {"sensor": "room"}, 1),
+        ("thermostat", {"heat_action": [], "fan_mode_low_action": [], "swing_off_action": []}, 5 | 8 | 16),
+        ("thermostat", {"heat_action": [], "preset": [{"name": "home"}]}, 5 | 32),
+        ("thermostat", {"heat_action": [], "humidity_sensor": "h"}, 5 | 64),
+        ("thermostat", {"heat_action": [], "humidity_control_humidify_action": []}, 5 | 128),
+        ("bang_bang", {"away_config": {}, "humidity_sensor": "h"}, 7 | 32 | 64),
+        ("pid", {"humidity_sensor": "h"}, 5 | 64),
+        ("coolix", {}, 8 | 16),
+        ("coolix", {"sensor": "room"}, 1 | 8 | 16),
+        ("coolix", {"humidity_sensor": "h"}, 8 | 16 | 64),
+        ("daikin_arc", {}, 1 | 8 | 16 | 128),
+        ("mitsubishi", {}, 8 | 16 | 32),
+        ("toshiba", {}, 8),
     ],
 )
 def test_climate_platforms(platform, conf, caps):
@@ -210,6 +220,86 @@ def test_climate_platforms(platform, conf, caps):
 )
 def test_climate_states(caps, states):
     assert layout.entity_states(layout.DOMAIN_CLIMATE, caps) == states
+
+
+def test_climate_states_all_features():
+    assert layout.entity_states(layout.DOMAIN_CLIMATE, 255) == [
+        ("mode", 1),
+        ("target_temperature_low", 2),
+        ("target_temperature_high", 2),
+        ("fan_mode", 1),
+        ("swing_mode", 1),
+        ("preset", 1),
+        ("target_humidity", 1),
+        ("action", 1),
+        ("current_temperature", 2),
+        ("current_humidity", 1),
+    ]
+
+
+def _entity(index, tpdo, domain="climate", caps=255):
+    return {"id": f"e{index}", "index": index, "tpdo": tpdo, "_domain": domain, "_caps": caps}
+
+
+def _states(*entities, template_entities=()):
+    def resolve(entity):
+        return entity["_domain"], {"platform": "x"}
+
+    config = {
+        "entities": [{**e, "caps": [n for n, b in layout.CAPS_NAMES[e["_domain"]].items() if e["_caps"] & b]}
+                     for e in entities],
+        "template_entities": list(template_entities),
+    }
+    return layout.node_states(config, resolve)
+
+
+def test_multi_tpdo_assignment():
+    # 13 bytes: the first TPDO fills up, the rest goes to the next one with room
+    states = _states(_entity(1, [2, 3]))
+    assert [(tpdo, label.split(".")[1]) for _, tpdo, _, label in states] == [
+        (2, "mode"),
+        (2, "target_temperature_low"),
+        (2, "target_temperature_high"),
+        (2, "fan_mode"),
+        (2, "swing_mode"),
+        (2, "preset"),
+        (3, "target_humidity"),
+        (3, "action"),
+        (3, "current_temperature"),
+        (3, "current_humidity"),
+    ]
+    mapping = layout.tpdo_mapping(states)
+    assert [sum(w & 0xFF for w in mapping[t]) // 8 for t in (2, 3)] == [8, 5]
+
+
+def test_multi_tpdo_respects_other_entities_and_templates():
+    template = {"index": 30, "tpdo": 2, "states": [{"type": "uint16"}]}
+    states = _states(
+        _entity(1, 2, caps=0),  # mode + target temperature: 3 bytes in TPDO2
+        _entity(2, [2, 4], caps=0),
+        template_entities=[template],
+    )
+    # 2 (template) + 3 used: entity 2's mode fits TPDO2, its target temperature (2 B) too: 8 B
+    assert [tpdo for idx, tpdo, _, _ in states if idx == 2] == [2, 2]
+    states = _states(_entity(1, 2, caps=1), _entity(2, [2, 4], caps=0), template_entities=[template])
+    # 2 + 5 used: 1 byte left, the 2-byte target temperature goes to TPDO4
+    assert [tpdo for idx, tpdo, _, _ in states if idx == 2] == [2, 4]
+
+
+def test_multi_tpdo_overflow():
+    # 5 bytes of entity 1 in TPDO2: 3 + 8 free for 13 bytes
+    with pytest.raises(layout.LayoutError, match="entity 'e2': states don't fit the TPDOs \\[2, 3\\]"):
+        _states(_entity(1, 2, caps=1), _entity(2, [2, 3], caps=255))
+    # a single TPDO overflows in tpdo_mapping(), as before
+    with pytest.raises(layout.LayoutError, match="TPDO 2 exceeds 8 bytes"):
+        layout.tpdo_mapping(_states(_entity(1, 2, caps=255)))
+
+
+def test_tpdo_numbers():
+    assert layout.tpdo_numbers({}) == [-1]
+    assert layout.tpdo_numbers({"tpdo": 3}) == [3]
+    assert layout.tpdo_numbers({"tpdo": {"number": 3}}) == [3]
+    assert layout.tpdo_numbers({"tpdo": [1, {"number": 2, "immediate": True}]}) == [1, 2]
 
 
 def test_climate_caps_override_and_unknown_platform():

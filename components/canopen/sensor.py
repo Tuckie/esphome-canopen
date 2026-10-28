@@ -2,7 +2,7 @@
 
 Booleans are 0 / 1, percentages 0..1, color temperatures in mireds, cover / alarm
 states their codes (OBJECT_DICTIONARY.md), sensor / number values and climate
-temperatures decoded.
+temperatures / humidities decoded.
 """
 
 import esphome.config_validation as cv

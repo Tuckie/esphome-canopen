@@ -12,6 +12,22 @@ static const char *const ALARM_STATES[] = {
     "pending",  "arming",     "disarming",  "triggered"};
 static const char *const CLIMATE_MODES[] = {"off", "heat_cool", "cool", "heat", "fan_only", "dry", "auto"};
 static const char *const CLIMATE_ACTIONS[] = {"off", "", "cooling", "heating", "idle", "drying", "fan", "defrosting"};
+static const char *const CLIMATE_FAN_MODES[] = {"on",   "off",    "auto",  "low",     "medium",
+                                                "high", "middle", "focus", "diffuse", "quiet"};
+static const char *const CLIMATE_SWING_MODES[] = {"off", "both", "vertical", "horizontal"};
+static const char *const CLIMATE_PRESETS[] = {"none", "home", "away", "boost", "comfort", "eco", "sleep", "activity"};
+// layout.py CLIMATE_CUSTOM_*_BASE
+static const uint32_t CLIMATE_CUSTOM_FAN_MODE_BASE = 10;
+static const uint32_t CLIMATE_CUSTOM_PRESET_BASE = 8;
+
+// name of a fan mode / preset code: standard name, "custom_<n>" or "" (none, 255)
+static std::string climate_code_name(uint32_t raw, const char *const *names, uint32_t count, uint32_t custom_base) {
+  if (raw < count)
+    return names[raw];
+  if (raw >= custom_base && raw < 255)
+    return "custom_" + std::to_string(raw - custom_base);
+  return "";
+}
 
 float RemoteStateFormat::decode(uint32_t raw) const {
   switch (kind) {
@@ -30,6 +46,8 @@ float RemoteStateFormat::decode(uint32_t raw) const {
       return scale_from_wire(raw, min_value, max_value, size == 1 ? 255 : 65535);
     case REMOTE_STATE_TEMPERATURE:
       return temperature_from_wire(raw);
+    case REMOTE_STATE_HUMIDITY:
+      return humidity_from_wire(raw);
     default:  // cover / alarm / climate state codes
       return raw;
   }
@@ -55,6 +73,16 @@ std::string RemoteStateFormat::to_string(uint32_t raw) const {
       if (raw < sizeof(CLIMATE_ACTIONS) / sizeof(CLIMATE_ACTIONS[0]) && CLIMATE_ACTIONS[raw][0])
         return CLIMATE_ACTIONS[raw];
       break;
+    case REMOTE_STATE_CLIMATE_FAN_MODE:
+      return climate_code_name(raw, CLIMATE_FAN_MODES, sizeof(CLIMATE_FAN_MODES) / sizeof(CLIMATE_FAN_MODES[0]),
+                               CLIMATE_CUSTOM_FAN_MODE_BASE);
+    case REMOTE_STATE_CLIMATE_SWING_MODE:
+      if (raw < sizeof(CLIMATE_SWING_MODES) / sizeof(CLIMATE_SWING_MODES[0]))
+        return CLIMATE_SWING_MODES[raw];
+      break;
+    case REMOTE_STATE_CLIMATE_PRESET:
+      return climate_code_name(raw, CLIMATE_PRESETS, sizeof(CLIMATE_PRESETS) / sizeof(CLIMATE_PRESETS[0]),
+                               CLIMATE_CUSTOM_PRESET_BASE);
   }
   return std::to_string(raw);
 }

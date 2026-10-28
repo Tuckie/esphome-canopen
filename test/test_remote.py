@@ -96,13 +96,24 @@ def test_remote_node_climate(node):
         "mode",
         "target_temperature_low",
         "target_temperature_high",
+        "fan_mode",
+        "swing_mode",
+        "preset",
+        "target_humidity",
         "action",
         "current_temperature",
+        "current_humidity",
     ]
+    # spread over TPDO 4 (first 8 bytes) and TPDO 5
+    preset = node.state(entity_id="hvac", state="preset")
+    assert (preset["tpdo"], preset["offset"], preset["cmd"], preset["kind"]) == (4, 7, 5, "climate_preset")
     current = node.state(entity_id="hvac", state="current_temperature")
-    assert (current["tpdo"], current["offset"], current["size"], current["kind"]) == (4, 6, 2, "temperature")
+    assert (current["tpdo"], current["offset"], current["size"], current["kind"]) == (5, 2, 2, "temperature")
+    humidity = node.state(entity_id="hvac", state="current_humidity")
+    assert (humidity["tpdo"], humidity["offset"], humidity["kind"]) == (5, 4, "humidity")
     assert node.state(entity_id="hvac")["kind"] == "climate_mode"
     assert node.state(entity_id="hvac", state="action")["kind"] == "climate_action"
+    assert node.state(entity_id="hvac", state="fan_mode")["kind"] == "climate_fan_mode"
 
 
 def test_remote_node_errors(node):
@@ -217,6 +228,22 @@ def test_actions(raw_config):
     ]
     assert climate["_writes"][0]["min_value"] == layout.TEMPERATURE_MIN
 
+    climate = _validate(
+        "canopen.climate.control",
+        entity="hvac",
+        fan_mode="high",
+        swing_mode="vertical",
+        preset="Night Setback",
+        target_humidity=55,
+    )
+    assert [(w["cmd"], w["encoding"], w["value"]) for w in climate["_writes"]] == [
+        (6, canopen.ENC_SCALED, 55.0),  # target humidity
+        (3, canopen.ENC_RAW, 5),  # fan mode high
+        (4, canopen.ENC_RAW, 2),  # swing vertical
+        (5, canopen.ENC_RAW, layout.CLIMATE_CUSTOM_PRESET_BASE),  # first custom preset
+    ]
+    assert _validate("canopen.climate.control", entity="hvac", preset="away")["_writes"][0]["value"] == 2
+
     # commands only: the remote entity doesn't need a TPDO
     assert _validate("canopen.switch.turn_on", entity="pump")["index"] == 9
 
@@ -230,7 +257,9 @@ def test_actions(raw_config):
         ("canopen.switch.toggle", {"entity": "pump"}, "not sent in any TPDO"),
         ("canopen.cover.control", {"entity": "cover_hall"}, "set 'stop', 'position' or 'tilt'"),
         ("canopen.number.set", {"entity": "temperature", "value": 1}, "is a sensor, expected number"),
-        ("canopen.climate.control", {"entity": "hvac"}, "set 'mode', 'target_temperature'"),
+        ("canopen.climate.control", {"entity": "hvac"}, "set at least one of 'mode'"),
+        ("canopen.climate.control", {"entity": "hvac", "preset": "Holiday"}, "unknown preset 'Holiday'"),
+        ("canopen.climate.control", {"entity": "hvac", "fan_mode": "turbo"}, "unknown fan_mode 'turbo'"),
         ("canopen.climate.control", {"entity": "hvac", "target_temperature": 21}, "has no target_temperature"),
         ("canopen.climate.control", {"entity": "cover_hall", "mode": "HEAT"}, "is a cover, expected climate"),
         ("canopen.cover.stop", {"entity": "nope"}, "not exposed"),

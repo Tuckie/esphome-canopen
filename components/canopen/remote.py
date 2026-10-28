@@ -100,6 +100,13 @@ def _float(value):
     return value if isinstance(value, (int, float)) else float(str(value))
 
 
+def _tpdo(tpdo):
+    """A `tpdo:` entry: int or {number: ...}."""
+    if isinstance(tpdo, dict):
+        return {**tpdo, "number": _int(tpdo["number"])}
+    return _int(tpdo)
+
+
 def _normalize_node_config(canopen):
     """Coerce the raw `canopen:` options layout.py reads to ints."""
     canopen = {**canopen, "node_id": _int(canopen["node_id"])}
@@ -107,10 +114,10 @@ def _normalize_node_config(canopen):
     for entity in canopen.get("entities") or ():
         entity = {**entity, "index": _int(entity["index"])}
         tpdo = entity.get("tpdo")
-        if isinstance(tpdo, dict):
-            entity["tpdo"] = {**tpdo, "number": _int(tpdo["number"])}
+        if isinstance(tpdo, list):
+            entity["tpdo"] = [_tpdo(t) for t in tpdo]
         elif tpdo is not None:
-            entity["tpdo"] = _int(tpdo)
+            entity["tpdo"] = _tpdo(tpdo)
         if entity.get("size") is not None:
             entity["size"] = _int(entity["size"])
         for key in ("min_value", "max_value"):
@@ -149,8 +156,11 @@ class RemoteNode:
             self.mapping = layout.tpdo_mapping(self.states)
             # entity index -> (domain, [(state name, size, kind)])
             self.entity_states = {}
+            # entity index -> raw platform config
+            self.platform_configs = {}
             for entity in self.entities:
                 domain, platform_config = find_entity(config, entity["id"])
+                self.platform_configs[entity["index"]] = platform_config
                 caps = layout.entity_caps(domain, platform_config, entity.get("caps"))
                 self.entity_states[entity["index"]] = (
                     domain,
@@ -208,7 +218,11 @@ class RemoteNode:
         info = {"domain": domain, "kind": kind, "cmd": cmd}
         if kind == layout.KIND_VALUE and size != 4:
             info["min_value"], info["max_value"] = self.scaling(entity)
-        tpdo = layout.tpdo_number(entity)
+        tpdo = next(
+            state_tpdo
+            for idx, state_tpdo, _, label in self.states
+            if idx == entity["index"] and label.split(".", 1)[1] == state
+        )
         if tpdo < 0:
             raise RemoteError(
                 f"{self.name} entity '{entity_name}' is not sent in any TPDO, add 'tpdo:' to it in {self.path}"

@@ -119,7 +119,12 @@ ENTITY_SCHEMA = cv.Schema(
         cv.Optional("size"): cv.int_,
         cv.Optional("min_value"): cv.float_,
         cv.Optional("max_value"): cv.float_,
-        cv.Optional("tpdo"): cv.Any(cv.int_, TPDO_SCHEMA),
+        # one TPDO, or a list: the entity's states go to the first listed TPDO with room
+        cv.Optional("tpdo"): cv.Any(
+            cv.int_,
+            TPDO_SCHEMA,
+            cv.All([cv.Any(cv.int_, TPDO_SCHEMA)], cv.Length(min=1)),
+        ),
         cv.Optional("rpdo"): cv.ensure_list(RPDO_SCHEMA),
         # light / cover / climate capabilities, for platforms not known to layout.py
         cv.Optional("caps"): cv.ensure_list(cv.string),
@@ -674,13 +679,20 @@ def to_code(config_list):
         for entity_config in entities:
             entity = yield cg.get_variable(entity_config["id"])
             caps, _ = entity_layout(CORE.config, entity_config)
-            tpdo = entity_config.get("tpdo", -1)
-            if not isinstance(tpdo, dict):
-                tpdo = {"number": tpdo, "immediate": False}
+            tpdo_list = entity_config.get("tpdo", -1)
+            if not isinstance(tpdo_list, list):
+                tpdo_list = [tpdo_list]
+            tpdo_list = [
+                t if isinstance(t, dict) else {"number": t, "immediate": False}
+                for t in tpdo_list
+            ]
 
-            tpdo_struct = cg.StructInitializer(
-                TPDO, ("number", tpdo["number"]), ("immediate", tpdo["immediate"])
-            )
+            def tpdo_initializer(tpdo):
+                return cg.StructInitializer(
+                    TPDO, ("number", tpdo["number"]), ("immediate", tpdo["immediate"])
+                )
+
+            tpdo_struct = tpdo_initializer(tpdo_list[0])
 
             size = entity_config.get("size")
             if size in (1, 2):
@@ -706,6 +718,21 @@ def to_code(config_list):
                 )
             else:
                 cg.add(canopen.add_entity(entity, entity_config["index"], tpdo_struct))
+
+            if len(tpdo_list) > 1:
+                # per-state TPDOs as computed by layout.assign_tpdos()
+                immediate = {t["number"]: t["immediate"] for t in tpdo_list}
+                state_tpdos = [
+                    {"number": tpdo, "immediate": immediate.get(tpdo, False)}
+                    for index, tpdo, _, _ in states
+                    if index == entity_config["index"]
+                ]
+                cg.add(
+                    canopen.set_state_tpdos(
+                        entity_config["index"],
+                        [tpdo_initializer(t) for t in state_tpdos],
+                    )
+                )
 
         for tmpl_entity in config.get("template_entities", []):
             index = tmpl_entity["index"]
@@ -1092,6 +1119,21 @@ CLIMATE_MODES = {
 }
 
 
+CLIMATE_FAN_MODES = {
+    name: code
+    for code, name in enumerate(
+        ("ON", "OFF", "AUTO", "LOW", "MEDIUM", "HIGH", "MIDDLE", "FOCUS", "DIFFUSE", "QUIET")
+    )
+}
+CLIMATE_SWING_MODES = {"OFF": 0, "BOTH": 1, "VERTICAL": 2, "HORIZONTAL": 3}
+CLIMATE_PRESETS = {
+    name: code
+    for code, name in enumerate(
+        ("NONE", "HOME", "AWAY", "BOOST", "COMFORT", "ECO", "SLEEP", "ACTIVITY")
+    )
+}
+
+
 def _temperature_write(target, state, value):
     return _write(
         target.cmd(state),
@@ -1103,21 +1145,65 @@ def _temperature_write(target, state, value):
     )
 
 
+def _remote_custom_presets(target):
+    """Custom preset names of a remote climate, in the order of its C++ custom presets.
+
+    Known for `thermostat` only: its `preset:` entries not named like a standard preset.
+    """
+    conf = target.node.platform_configs.get(target.entity["index"]) or {}
+    if conf.get("platform") != "thermostat":
+        return []
+    return [
+        str(p["name"])
+        for p in conf.get("preset") or ()
+        if str(p["name"]).upper() not in CLIMATE_PRESETS
+    ]
+
+
+def _climate_code(option, value, codes, custom=(), custom_base=None):
+    """Code of a constant mode name (standard or custom); a lambda returns the code itself."""
+    if isinstance(value, Lambda):
+        return value
+    name = str(value)
+    if name.upper() in codes:
+        return codes[name.upper()]
+    if name in custom:
+        return custom_base + list(custom).index(name)
+    valid = [n.lower() for n in codes] + list(custom)
+    raise cv.Invalid(f"canopen.climate.control: unknown {option} '{name}', valid: {', '.join(valid)}")
+
+
 def _climate_control_writes(config, target):
     writes = []
     # temperatures first, so the mode change sees the new set points
     for option in ("target_temperature", "target_temperature_low", "target_temperature_high"):
         if option in config:
             writes.append(_temperature_write(target, option, config[option]))
+    if "target_humidity" in config:
+        writes.append(
+            _write(
+                target.cmd("target_humidity"),
+                config["target_humidity"],
+                encoding=ENC_SCALED,
+                min_value=0.0,
+                max_value=254.0,
+            )
+        )
+    for option, codes, custom, base in (
+        ("fan_mode", CLIMATE_FAN_MODES, (), layout.CLIMATE_CUSTOM_FAN_MODE_BASE),
+        ("swing_mode", CLIMATE_SWING_MODES, (), None),
+        ("preset", CLIMATE_PRESETS, _remote_custom_presets(target), layout.CLIMATE_CUSTOM_PRESET_BASE),
+    ):
+        if option in config:
+            code = _climate_code(option, config[option], codes, custom, base)
+            writes.append(_write(target.cmd(option), code))
     if "mode" in config:
-        mode = config["mode"]
-        if not isinstance(mode, Lambda):  # a lambda returns the mode code
-            mode = CLIMATE_MODES[str(mode).upper()]
-        writes.append(_write(target.cmd("mode"), mode))
+        writes.append(_write(target.cmd("mode"), _climate_code("mode", config["mode"], CLIMATE_MODES)))
     if not writes:
         raise cv.Invalid(
-            "canopen.climate.control: set 'mode', 'target_temperature', "
-            "'target_temperature_low' or 'target_temperature_high'"
+            "canopen.climate.control: set at least one of 'mode', 'target_temperature', "
+            "'target_temperature_low', 'target_temperature_high', 'fan_mode', 'swing_mode', "
+            "'preset' or 'target_humidity'"
         )
     return writes
 
@@ -1131,6 +1217,11 @@ _remote_action(
         cv.Optional("target_temperature"): cv.templatable(cv.temperature),
         cv.Optional("target_temperature_low"): cv.templatable(cv.temperature),
         cv.Optional("target_temperature_high"): cv.templatable(cv.temperature),
+        # standard name or (thermostat) custom preset name; a lambda returns the code
+        cv.Optional("fan_mode"): cv.templatable(cv.string_strict),
+        cv.Optional("swing_mode"): cv.templatable(cv.enum(CLIMATE_SWING_MODES, upper=True)),
+        cv.Optional("preset"): cv.templatable(cv.string_strict),
+        cv.Optional("target_humidity"): cv.templatable(cv.float_range(min=0, max=100)),
     },
 )
 

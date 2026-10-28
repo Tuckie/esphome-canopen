@@ -53,7 +53,8 @@ class Cover;
 #ifdef USE_CLIMATE
 namespace climate {
 class Climate;
-}
+class ClimateCall;
+}  // namespace climate
 #endif
 
 }  // namespace esphome
@@ -76,6 +77,9 @@ float color_temp_from_wire(uint32_t value);
 // climate temperatures: UINT16, 0.01 degC steps over -327.67..327.67, 65535 unknown
 uint16_t temperature_to_wire(float value);
 float temperature_from_wire(uint32_t value);
+// humidity: UINT8, 0..254 %, rounded, 255 unknown
+uint8_t humidity_to_wire(float value);
+float humidity_from_wire(uint32_t value);
 
 class CanopenComponent;
 
@@ -83,12 +87,23 @@ class BaseCanopenEntity {
  public:
   uint32_t entity_id;
   TPDO tpdo;
+  // TPDO of each state (subindex - 1) when the entity is spread over several TPDOs (codegen, layout.py
+  // assign_tpdos()); empty: all states in `tpdo`
+  std::vector<TPDO> state_tpdos;
   BaseCanopenEntity(uint32_t entity_id, TPDO tpdo) {
     this->entity_id = entity_id;
     this->tpdo = tpdo;
   }
   virtual void setup(CanopenComponent *canopen) = 0;
+  // adds the next state of the entity to the OD, mapped to its TPDO
+  uint32_t add_state(CanopenComponent *canopen, const CO_OBJ_TYPE *type, void *state, uint8_t size);
   void od_set_state(CanopenComponent *canopen, uint32_t key, void *state, uint8_t size);
+
+ protected:
+  uint8_t num_states_{0};
+  TPDO state_tpdo(uint8_t sub_index) const {
+    return sub_index >= 1 && sub_index <= state_tpdos.size() ? state_tpdos[sub_index - 1] : tpdo;
+  }
 };
 
 #ifdef USE_SENSOR
@@ -197,12 +212,23 @@ class ClimateEntity : public BaseCanopenEntity {
   uint32_t target_key{0};
   uint32_t target_low_key{0};
   uint32_t target_high_key{0};
+  uint32_t fan_mode_key{0};
+  uint32_t swing_mode_key{0};
+  uint32_t preset_key{0};
+  uint32_t target_humidity_key{0};
   uint32_t action_key{0};
   uint32_t current_key{0};
+  uint32_t current_humidity_key{0};
+  // custom fan modes / presets, code = base + position (layout.py CLIMATE_CUSTOM_*_BASE)
+  std::vector<const char *> custom_fan_modes;
+  std::vector<const char *> custom_presets;
 
   void publish_states();
   void set_state(uint32_t key, uint8_t value);
   void set_temperature(uint32_t key, float value);
+  uint8_t fan_mode_code() const;
+  uint8_t preset_code() const;
+  void add_cmd(std::function<void(climate::ClimateCall &, uint32_t raw)> set, const CO_OBJ_TYPE *type);
 
  public:
   esphome::climate::Climate *climate;

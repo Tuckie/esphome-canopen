@@ -1,4 +1,4 @@
-"""`text_sensor: - platform: canopen`: cover / alarm / climate mode / climate action state or on / off of a remote node's entity."""
+"""`text_sensor: - platform: canopen`: cover / alarm state, climate mode / action / fan mode / swing mode / preset or on / off of a remote node's entity."""
 
 import esphome.config_validation as cv
 from esphome.components import text_sensor
@@ -21,6 +21,9 @@ CONFIG_SCHEMA = cv.All(
             layout.KIND_ALARM_STATE,
             layout.KIND_CLIMATE_MODE,
             layout.KIND_CLIMATE_ACTION,
+            layout.KIND_CLIMATE_FAN_MODE,
+            layout.KIND_CLIMATE_SWING_MODE,
+            layout.KIND_CLIMATE_PRESET,
         ],
     ),
 )

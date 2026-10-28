@@ -40,12 +40,12 @@ each node ([TPDO layout](../OBJECT_DICTIONARY.md#tpdo-layout)).
 ## `entity` schema
 * `id` (Required, string): id of ESPHome entity
 * `index` (Required, int): index of entity, range 1..64. Together with `node_id` forms unique id of CAN-exposed entity, so it should be changed with a care. Indices must be unique.
-* `tpdo` (Optional, `TPDO` schema (see below)): when defined then state changes will be broadcasted via TPDO
+* `tpdo` (Optional, `TPDO` schema or a list of them (see below)): when defined then state changes will be broadcasted via TPDO. With a list, the entity's states go to the first listed TPDO with room for them, for entities with more than 8 bytes of states (e.g. a climate with fan / swing modes, presets and humidity), see [TPDO layout](../OBJECT_DICTIONARY.md#tpdo-layout)
 * `rpdo` (Optional, list of `RPDO` schema (see below)): when defined then received TPDO frames will be automatically mapped to OD entity command entries
 * `size` (Optional, int, `sensor` / `number` only): size of state on the wire: `4` (default, REAL32), `1` (scaled UINT8) or `2` (scaled UINT16). See [Sensor8 / Sensor16](../OBJECT_DICTIONARY.md#sensor8--sensor16)
 * `min_value` (Optional, float, default=0): minimal value for scaled states (`size` 1 or 2)
 * `max_value` (Optional, float, default=254 for `size: 1`, 65534 for `size: 2`): maximal value for scaled states (`size` 1 or 2)
-* `caps` (Optional, list, `light` / `cover` / `climate` only): capabilities of the entity, needed only for platforms whose capabilities the component can't derive from the config (the build fails with a hint). Light: `on_off`, `brightness`, `color_temperature`; cover: `position`, `tilt`; climate: `current_temperature`, `two_point`, `action` (known: `thermostat`, `bang_bang`, `pid` and the IR climates based on `climate_ir`). See [TPDO layout](../OBJECT_DICTIONARY.md#tpdo-layout)
+* `caps` (Optional, list, `light` / `cover` / `climate` only): capabilities of the entity, needed only for platforms whose capabilities the component can't derive from the config (the build fails with a hint). Light: `on_off`, `brightness`, `color_temperature`; cover: `position`, `tilt`; climate: `current_temperature`, `two_point`, `action`, `fan_mode`, `swing_mode`, `preset`, `current_humidity`, `target_humidity` (known: `thermostat`, `bang_bang`, `pid` and the IR climates based on `climate_ir`, see [Climate](../OBJECT_DICTIONARY.md#climate)). See [TPDO layout](../OBJECT_DICTIONARY.md#tpdo-layout)
 
 ## `TPDO` schema
 Any of:
