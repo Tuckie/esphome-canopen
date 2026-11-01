@@ -50,6 +50,9 @@ of the mapper's `0x3000`: `docs/canopen_ota.md`.
 - `canopen_entities.cpp/.h`: `CANopenEntities` (the component), `MappedEntity` (one entity, the `OdObject` handler of
   its three records), remote state slots, the OD writer.
 - `log_buffer.*` / `remote_logs.*`: remote logs, see "Remote logs".
+- `climate_codes.*`: climate state layout (subindex of each state, same order as layout.py) and command decoding,
+  without ESPHome dependencies; host test `test/climate/climate_codes_test.cpp` (`test/test_climate_codes.py`). The
+  custom fan mode / preset names stay in the climate: read from its traits when needed, never copied.
 - `ota/`: the `ota: - platform: canopen_entities` component, OD `0x3000`, wraps the platform's
   `esphome::ota::make_ota_backend()`; optional zlib (miniz) decompression. Planned to move into the hub on CiA 302-3
   objects (`docs/canopen_ota.md`).

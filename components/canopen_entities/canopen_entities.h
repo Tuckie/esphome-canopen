@@ -4,6 +4,7 @@
 #include <span>
 #include <vector>
 
+#include "climate_codes.h"
 #include "esphome/components/canopen/canopen.h"
 #include "esphome/core/automation.h"
 #include "esphome/core/component.h"
@@ -59,28 +60,14 @@ enum EntityType : uint8_t {
   ENTITY_TYPE_ALARM = 16,
 };
 
-// light / cover / climate capability bits (0x2001:N bits 16..23), from codegen (layout.py)
+// light / cover capability bits (0x2001:N bits 16..23), from codegen (layout.py); climate: climate_codes.h
 enum : uint32_t {
   LIGHT_CAP_ON_OFF = 1,
   LIGHT_CAP_BRIGHTNESS = 2,
   LIGHT_CAP_COLOR_TEMPERATURE = 4,
   COVER_CAP_POSITION = 1,
   COVER_CAP_TILT = 2,
-  CLIMATE_CAP_CURRENT_TEMPERATURE = 1,
-  CLIMATE_CAP_TWO_POINT = 2,
-  CLIMATE_CAP_ACTION = 4,
-  CLIMATE_CAP_FAN_MODE = 8,
-  CLIMATE_CAP_SWING_MODE = 16,
-  CLIMATE_CAP_PRESET = 32,
-  CLIMATE_CAP_CURRENT_HUMIDITY = 64,
-  CLIMATE_CAP_TARGET_HUMIDITY = 128,
 };
-
-// climate fan mode / preset codes: the standard ones, then custom n = base + n (layout.py CLIMATE_CUSTOM_*_BASE),
-// 255 none
-static constexpr uint32_t CLIMATE_CUSTOM_FAN_MODE_BASE = 10;
-static constexpr uint32_t CLIMATE_CUSTOM_PRESET_BASE = 8;
-static constexpr uint32_t CLIMATE_CODE_NONE = 255;
 
 // wire encoding of scaled states and commands, see "Scaled values" in OBJECT_DICTIONARY.md (max_int = NaN)
 uint32_t scale_to_wire(float value, float min_val, float max_val, uint32_t max_int);
@@ -98,19 +85,18 @@ inline float humidity_from_wire(uint32_t wire) { return scale_from_wire(wire, 0.
 
 #ifdef USE_CLIMATE
 // what a climate entity adds to MappedEntity (allocated for climates only): its metadata and the subindex of each
-// state (0 = absent), in layout.py order
+// state. The custom fan mode / preset names stay in the climate (its traits), read when needed.
 struct ClimateInfo {
-  uint32_t modes{0};                           // meta 9: bit n = mode n
-  float temperature_step{0};                   // meta 10
-  uint32_t fan_modes{0};                       // meta 11
-  uint32_t swing_modes{0};                     // meta 12
-  uint32_t presets{0};                         // meta 13
-  float min_humidity{0};                       // meta 16
-  float max_humidity{0};                       // meta 17
-  std::vector<const char *> custom_fan_modes;  // meta 14, names in the climate
-  std::vector<const char *> custom_presets;    // meta 15
-  uint8_t mode{0}, target{0}, target_low{0}, target_high{0}, fan_mode{0}, swing_mode{0}, preset{0}, target_humidity{0},
-      action{0}, current{0}, current_humidity{0};
+  uint32_t modes{0};             // meta 9: bit n = mode n
+  float temperature_step{0};     // meta 10
+  uint32_t fan_modes{0};         // meta 11
+  uint32_t swing_modes{0};       // meta 12
+  uint32_t presets{0};           // meta 13
+  float min_humidity{0};         // meta 16
+  float max_humidity{0};         // meta 17
+  bool custom_fan_modes{false};  // meta 14 present
+  bool custom_presets{false};    // meta 15 present
+  ClimateSubs subs;
 };
 #endif
 // One exposed entity: metadata at 0x2000 + 16 * index, states at 0x2001 + 16 * index, commands at 0x2002 + 16 * index
