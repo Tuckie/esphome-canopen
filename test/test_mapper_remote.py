@@ -122,3 +122,28 @@ def test_rpdo_plan_raw_errors(old_node: remote.RemoteNode) -> None:
         remote.rpdo_plan([_raw(0x36, 3, 0, tpdo_size=8, entity_index=1, cmd=0), _source(old_node, "relay", slot=0)])
     with pytest.raises(remote.PlanError, match="offset 7 .* is outside the 6 B TPDO 3"):
         remote.rpdo_plan([_source(old_node, "relay", slot=0), dict(_raw(0x36, 3, 7, entity_index=1, cmd=0), label="node 0x36 TPDO 3 offset 7 (x)")])
+
+
+def test_remote_climate(old_node, new_node):
+    """A full thermostat (tpdo: [4, 5]): 8 bytes in TPDO 4, the rest in TPDO 5, in both formats."""
+    assert old_node.state_names(entity_id="hvac") == [
+        "mode",
+        "target_temperature_low",
+        "target_temperature_high",
+        "fan_mode",
+        "swing_mode",
+        "preset",
+        "target_humidity",
+        "action",
+        "current_temperature",
+        "current_humidity",
+    ]
+    preset = old_node.state(entity_id="hvac", state="preset")
+    assert (preset["tpdo"], preset["offset"], preset["cmd"], preset["kind"]) == (4, 7, 5, "climate_preset")
+    current = old_node.state(entity_id="hvac", state="current_temperature")
+    assert (current["tpdo"], current["offset"], current["size"], current["kind"]) == (5, 2, 2, "temperature")
+    humidity = new_node.state(entity_id="hvac", state="current_humidity")
+    assert (humidity["tpdo"], humidity["offset"], humidity["kind"]) == (5, 4, "humidity")
+    assert [old_node.tpdo_size(n) for n in (4, 5)] == [8, 5]
+    # the thermostat's raw config, for its custom presets (canopen_entities.climate.control)
+    assert [p["name"] for p in old_node.platform_configs[10]["preset"]] == ["home", "Night Setback"]

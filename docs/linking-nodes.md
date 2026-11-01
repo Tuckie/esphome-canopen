@@ -59,14 +59,16 @@ may switch a light on even if it's already on, see [#32](https://github.com/mrk-
 * `node` (Required, string): name of the node in `remote_nodes`
 * `entity` (Required, string): id of the remote entity (in the remote node's `entities`, with `tpdo`)
 * `state` (Optional, string): remote entity state, defaults to the first one: `state` (light, switch, binary sensor,
-  cover, alarm) or `value` (sensor, number). Others: light `brightness`, `color_temp`; cover `position`, `tilt`
+  cover, alarm), `mode` (climate) or `value` (sensor, number). Others: light `brightness`, `color_temp`; cover
+  `position`, `tilt`; climate `target_temperature` or `target_temperature_low` / `target_temperature_high`,
+  `fan_mode`, `swing_mode`, `preset`, `target_humidity`, `action`, `current_temperature`, `current_humidity`
 * all options of the entity type (`name`, `filters`, `on_value`, ...). Without `name` the entity is internal.
 
 | Platform | Remote states | Value |
 |---|---|---|
 | `binary_sensor` | light / switch / binary sensor `state` | |
-| `sensor` | any | `state`: 0 / 1; brightness, position, tilt: 0..1; `color_temp`: mireds; cover / alarm `state`: code (see [OBJECT_DICTIONARY.md](../OBJECT_DICTIONARY.md)); sensor / number `value` |
-| `text_sensor` | light / switch / binary sensor `state`, cover `state`, alarm `state` | `on` / `off`; `open`, `opening`, `closed`, `closing`; `disarmed`, `armed_home`, ... |
+| `sensor` | any | `state`: 0 / 1; brightness, position, tilt: 0..1; `color_temp`: mireds; cover / alarm `state`, climate `mode` / `action`: code (see [OBJECT_DICTIONARY.md](../OBJECT_DICTIONARY.md)); sensor / number `value`; climate temperatures: °C, humidities: %; climate fan / swing mode, preset: code |
+| `text_sensor` | light / switch / binary sensor `state`, cover `state`, alarm `state`, climate `mode` / `action` / `fan_mode` / `swing_mode` / `preset` | `on` / `off`; `open`, `opening`, `closed`, `closing`; `disarmed`, `armed_home`, ...; `off`, `heat`, `heat_cool`, ...; `idle`, `heating`, ...; `auto`, `low`, ...; `off`, `vertical`, ...; `none`, `home`, ... (custom fan modes / presets as `custom_<n>`) |
 
 A `platform: canopen_entities` entity can be listed in `canopen_entities: entities:` (without `rpdo`), e.g. to see the
 remote state through can2mqtt while debugging.
@@ -87,6 +89,7 @@ the remote entity needs `tpdo`.
 | `canopen_entities.cover.control` | cover | `stop` (bool), `position`, `tilt` (percentage, templatable) |
 | `canopen_entities.alarm_control_panel.disarm`, `.arm_away`, `.arm_home`, `.arm_night`, `.arm_vacation`, `.arm_custom_bypass` | alarm control panel | |
 | `canopen_entities.number.set` | number | `value` (Required, templatable float), scaled as the remote number |
+| `canopen_entities.climate.control` | climate | `mode` (`OFF`, `HEAT_COOL`, `COOL`, `HEAT`, `FAN_ONLY`, `DRY`, `AUTO`), `target_temperature`, or `target_temperature_low` / `target_temperature_high` for two-point climates (temperature), `fan_mode` (`auto`, `low`, ...), `swing_mode` (`OFF`, `BOTH`, `VERTICAL`, `HORIZONTAL`), `preset` (`home`, `away`, ..., or a custom preset of a remote `thermostat`), `target_humidity` (%); all templatable, a lambda for a mode / preset returns its [code](../OBJECT_DICTIONARY.md#climate); at least one |
 
 The old component's `canopen.entity_cmd` (a raw command to a remote entity) isn't available yet. For other devices
 on the bus, the `canopen` component's actions and lambdas write objects directly (`canopen.sdo_write`, `write_sdo()`).

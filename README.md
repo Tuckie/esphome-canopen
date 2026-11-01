@@ -40,8 +40,10 @@ is developed on), so one `external_components` entry brings both.
 ## Features
 
 * Entity types: `sensor`, `number`, `binary_sensor`, `switch`, `cover` (position / tilt), `light` (brightness /
-  color temperature) and `alarm_control_panel`
-* State broadcast in up to 8 TPDOs, with compact 1- or 2-byte encoding of sensor values
+  color temperature), `climate` (mode, set point(s), fan / swing mode, preset, humidity, action, current
+  temperature) and `alarm_control_panel`
+* State broadcast in up to 8 TPDOs, with compact 1- or 2-byte encoding of sensor values; an entity can be spread
+  over several TPDOs
 * [Linking nodes](docs/linking-nodes.md): actions such as `canopen_entities.light.toggle` and remote states as local
   entities, with other nodes referred to by their YAML file and entity ids
 * [OTA over CAN](docs/ota.md): firmware updates from Home Assistant through can2mqtt

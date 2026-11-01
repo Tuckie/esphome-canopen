@@ -10,6 +10,17 @@ static const char *const COVER_STATES[] = {"open", "opening", "closed", "closing
 static const char *const ALARM_STATES[] = {
     "disarmed", "armed_home", "armed_away", "armed_night", "armed_vacation", "armed_custom_bypass",
     "pending",  "arming",     "disarming",  "triggered"};
+static const char *const CLIMATE_MODES[] = {"off", "heat_cool", "cool", "heat", "fan_only", "dry", "auto"};
+static const char *const CLIMATE_ACTIONS[] = {"off",  nullptr,  "cooling", "heating",
+                                              "idle", "drying", "fan",     "defrosting"};
+static const char *const CLIMATE_FAN_MODES[] = {"on",   "off",    "auto",  "low",     "medium",
+                                                "high", "middle", "focus", "diffuse", "quiet"};
+static const char *const CLIMATE_SWING_MODES[] = {"off", "both", "vertical", "horizontal"};
+static const char *const CLIMATE_PRESETS[] = {"none", "home", "away", "boost", "comfort", "eco", "sleep", "activity"};
+
+template<size_t N> static const char *lookup(const char *const (&names)[N], uint32_t raw) {
+  return raw < N ? names[raw] : nullptr;
+}
 
 float RemoteStateFormat::decode(uint32_t raw) const {
   switch (this->kind) {
@@ -26,7 +37,11 @@ float RemoteStateFormat::decode(uint32_t raw) const {
         return value;
       }
       return scale_from_wire(raw, this->min_value, this->max_value, this->size == 1 ? 255 : 65535);
-    default:  // cover / alarm state codes
+    case REMOTE_STATE_TEMPERATURE:
+      return temperature_from_wire(raw);
+    case REMOTE_STATE_HUMIDITY:
+      return humidity_from_wire(raw);
+    default:  // cover / alarm / climate state codes
       return raw;
   }
 }
@@ -36,11 +51,32 @@ const char *RemoteStateFormat::name(uint32_t raw) const {
     case REMOTE_STATE_BOOL:
       return raw ? "on" : "off";
     case REMOTE_STATE_COVER_STATE:
-      return raw < std::size(COVER_STATES) ? COVER_STATES[raw] : nullptr;
+      return lookup(COVER_STATES, raw);
     case REMOTE_STATE_ALARM_STATE:
-      return raw < std::size(ALARM_STATES) ? ALARM_STATES[raw] : nullptr;
+      return lookup(ALARM_STATES, raw);
+    case REMOTE_STATE_CLIMATE_MODE:
+      return lookup(CLIMATE_MODES, raw);
+    case REMOTE_STATE_CLIMATE_ACTION:
+      return lookup(CLIMATE_ACTIONS, raw);
+    case REMOTE_STATE_CLIMATE_FAN_MODE:
+      return lookup(CLIMATE_FAN_MODES, raw);
+    case REMOTE_STATE_CLIMATE_SWING_MODE:
+      return lookup(CLIMATE_SWING_MODES, raw);
+    case REMOTE_STATE_CLIMATE_PRESET:
+      return lookup(CLIMATE_PRESETS, raw);
     default:
       return nullptr;
+  }
+}
+
+uint32_t RemoteStateFormat::custom_base() const {
+  switch (this->kind) {
+    case REMOTE_STATE_CLIMATE_FAN_MODE:
+      return CLIMATE_CUSTOM_FAN_MODE_BASE;
+    case REMOTE_STATE_CLIMATE_PRESET:
+      return CLIMATE_CUSTOM_PRESET_BASE;
+    default:
+      return 0;
   }
 }
 
@@ -72,9 +108,18 @@ void RemoteTextSensor::publish_raw_(uint32_t raw) {
     this->publish_state(name);
     return;
   }
-  char buf[12];
-  std::snprintf(buf, sizeof(buf), "%" PRIu32, raw);
-  this->publish_state(buf);
+  char buf[20];
+  uint32_t base = this->format_.custom_base();
+  if (base != 0 && raw == CLIMATE_CODE_NONE) {
+    this->publish_state("");  // no fan mode / preset
+  } else if (base != 0 && raw >= base) {
+    // the remote node's custom fan mode / preset names aren't known here
+    std::snprintf(buf, sizeof(buf), "custom_%" PRIu32, raw - base);
+    this->publish_state(buf);
+  } else {
+    std::snprintf(buf, sizeof(buf), "%" PRIu32, raw);
+    this->publish_state(buf);
+  }
 }
 #endif
 

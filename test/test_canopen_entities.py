@@ -481,3 +481,120 @@ def test_partial_hub(tmp_path):
     output = result.stdout + result.stderr
     assert "lacks enable_pdo, enable_sdo_block, CONF_SDO_BLOCK_SIZE" in output
     assert "github://mrk-its/esphome-canopen" in output
+
+
+CLIMATE = {
+    "sensor": [{"platform": "template", "id": "room_humidity", "name": "Humidity"}],
+    "climate": [
+        {
+            "platform": "thermostat",
+            "id": "hvac",
+            "name": "HVAC",
+            "sensor": "temp",
+            "humidity_sensor": "room_humidity",
+            "min_heating_off_time": "300s",
+            "min_heating_run_time": "300s",
+            "min_cooling_off_time": "300s",
+            "min_cooling_run_time": "300s",
+            "min_idle_time": "30s",
+            "min_fan_mode_switching_time": "15s",
+            "heat_action": [],
+            "cool_action": [],
+            "idle_action": [],
+            "fan_mode_auto_action": [],
+            "fan_mode_high_action": [],
+            "swing_off_action": [],
+            "swing_both_action": [],
+            "humidity_control_humidify_action": [],
+            "humidity_control_off_action": [],
+            "default_preset": "home",
+            "preset": [
+                {"name": "home", "default_target_temperature_low": "20 °C", "default_target_temperature_high": "24 °C"},
+                {"name": "Vacation", "default_target_temperature_low": "10 °C", "default_target_temperature_high": "30 °C"},
+            ],
+        }
+    ],
+}
+
+
+@needs_esphome
+def test_codegen_climate(tmp_path: Path) -> None:
+    """A climate with every capability (13 B), spread over TPDO 3 (after another entity), 4 and 5."""
+    entities = [{"id": "temp", "index": 1, "tpdo": 3}, {"id": "hvac", "index": 9, "tpdo": [3, 4, 5]}]
+    main_cpp, defines = generate(tmp_path, entities, CLIMATE)
+    mapper = re.search(r"(\w+)->set_layout_hash\(", main_cpp).group(1)
+    assert f"{mapper}->add_climate(hvac, 9, 255);" in main_cpp
+    # 10 states: the MappedEntity arrays grow
+    assert "#define CANOPEN_ENTITIES_MAX_STATES 10" in defines
+    # each state goes to the first listed TPDO with room: TPDO 3 takes temp (4 B), mode, low (2 B), then the 2-byte
+    # high set point starts TPDO 4 and the 1-byte fan mode fills TPDO 3; the current humidity is left for TPDO 5
+    tpdos = {
+        3: [(0x2011, 1, 32), (0x2091, 1, 8), (0x2091, 2, 16), (0x2091, 4, 8)],
+        4: [(0x2091, 3, 16), (0x2091, 5, 8), (0x2091, 6, 8), (0x2091, 7, 8), (0x2091, 8, 8), (0x2091, 9, 16)],
+        5: [(0x2091, 10, 8)],
+    }
+    for tpdo, entries in tpdos.items():
+        items = ", ".join(f"{{0x{index:04X}, {sub}, {bits}}}" for index, sub, bits in entries)
+        assert f"can_hub->configure_tpdo({tpdo}, {layout.tpdo_cob_id(tpdo, NODE_ID)}, {{{items}}});" in main_cpp
+
+
+@needs_esphome
+def test_codegen_climate_remote(tmp_path: Path) -> None:
+    extra = {
+        **remote_entity("text_sensor", "hvac_preset", "dimmer", "hvac", "preset"),
+        **remote_entity("sensor", "hvac_humidity", "dimmer", "hvac", "current_humidity"),
+        **button(
+            {
+                "canopen_entities.climate.control": {
+                    "node": "dimmer",
+                    "entity": "hvac",
+                    "mode": "HEAT_COOL",
+                    "target_temperature_low": "19.5 °C",
+                    "fan_mode": "high",
+                    "swing_mode": "VERTICAL",
+                    "preset": "Night Setback",
+                    "target_humidity": 55,
+                }
+            },
+        ),
+    }
+    main_cpp, _ = generate(tmp_path, [], extra, remote_nodes=REMOTE_NODES)
+    mapper = re.search(r"(\w+)->set_layout_hash\(", main_cpp).group(1)
+    # kinds 11 (climate preset) and 12 (humidity); slots sorted: current_humidity, preset
+    assert f"hvac_humidity->attach({mapper}, 0, 12, 1, 0.0f, 0.0f);" in main_cpp
+    assert f"hvac_preset->attach({mapper}, 1, 11, 1, 0.0f, 0.0f);" in main_cpp
+    assert "->set_target(54, 10);" in main_cpp
+
+    def write(cmd: int, size: int, encoding: int, min_value: str, max_value: str, value: str) -> bool:
+        args = f"{cmd}, {size}, {encoding}, {min_value}, {max_value}, "
+        return re.search(rf"->add_write\({re.escape(args)}\[\]\(\) -> float \{{\s*return {re.escape(value)};", main_cpp)
+
+    assert write(1, 2, 3, "-327.67f", "327.67f", "19.5f")  # low set point, scaled UINT16
+    assert write(6, 1, 3, "0.0f", "254.0f", "55.0f")  # target humidity
+    assert write(3, 1, 0, "0.0f", "0.0f", "5")  # fan mode high
+    assert write(4, 1, 0, "0.0f", "0.0f", "2")  # swing vertical
+    assert write(5, 1, 0, "0.0f", "0.0f", "8")  # the first custom preset
+    assert write(0, 1, 0, "0.0f", "0.0f", "1")  # mode heat_cool, last
+    assert main_cpp.count("->add_write(") == 6
+
+
+@needs_esphome
+@pytest.mark.parametrize(
+    "action, message",
+    [
+        pytest.param({}, "set at least one of 'mode'", id="empty"),
+        pytest.param({"preset": "Holiday"}, "unknown preset 'Holiday'", id="preset"),
+        pytest.param({"target_temperature": 21}, "has no target_temperature", id="two-point"),
+    ],
+)
+def test_invalid_climate_control(tmp_path: Path, action: dict, message: str) -> None:
+    extra = button({"canopen_entities.climate.control": {"node": "dimmer", "entity": "hvac", **action}})
+    assert message in config_error(tmp_path, [], extra, remote_nodes=REMOTE_NODES)
+
+
+@needs_esphome
+def test_invalid_tpdo_list_overflow(tmp_path: Path) -> None:
+    entities = [{"id": "temp", "index": 1, "tpdo": 3}, {"id": "hvac", "index": 9, "tpdo": [3]}]
+    assert "TPDO 3 exceeds 8 bytes" in config_error(tmp_path, entities, CLIMATE)
+    entities = [{"id": "temp", "index": 1, "tpdo": 3}, {"id": "hvac", "index": 9, "tpdo": [3, 0]}]
+    assert "states don't fit the TPDOs [3, 0]" in config_error(tmp_path, entities, CLIMATE)

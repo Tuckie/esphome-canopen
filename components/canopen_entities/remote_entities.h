@@ -18,6 +18,13 @@ enum RemoteStateKind : uint8_t {
   REMOTE_STATE_COVER_STATE = 3,
   REMOTE_STATE_ALARM_STATE = 4,
   REMOTE_STATE_VALUE = 5,
+  REMOTE_STATE_TEMPERATURE = 6,
+  REMOTE_STATE_CLIMATE_MODE = 7,
+  REMOTE_STATE_CLIMATE_ACTION = 8,
+  REMOTE_STATE_CLIMATE_FAN_MODE = 9,
+  REMOTE_STATE_CLIMATE_SWING_MODE = 10,
+  REMOTE_STATE_CLIMATE_PRESET = 11,
+  REMOTE_STATE_HUMIDITY = 12,
 };
 
 // decoding of a raw remote state slot value
@@ -28,8 +35,11 @@ struct RemoteStateFormat {
   float max_value{0.0f};
 
   float decode(uint32_t raw) const;
-  // on / off, cover / alarm state names; nullptr for other kinds and unknown codes
+  // on / off, cover / alarm state, climate mode / action / fan mode / swing mode / preset names; nullptr for other
+  // kinds and unknown codes
   const char *name(uint32_t raw) const;
+  // climate fan mode / preset: the first custom code (custom n = base + n), 0 for other kinds
+  uint32_t custom_base() const;
 };
 
 // `platform: canopen_entities` entities: show a remote state slot (CANopenEntities::add_remote_state())

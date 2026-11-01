@@ -62,7 +62,10 @@ One `canopen_entities:` per firmware.
 * `id` (Required, id): id of the ESPHome entity.
 * `index` (Required, int, 1..255): index of the entity. Together with `node_id` it is the unique id of the
   CAN-exposed entity in Home Assistant, so change it with care. Indices must be unique.
-* `tpdo` (Optional, `TPDO` schema, see below): broadcast state changes in this TPDO.
+* `tpdo` (Optional, `TPDO` schema or a list of them, see below): broadcast state changes in this TPDO. With a list,
+  each of the entity's states goes to the first listed TPDO with room for it, for entities with more than 8 bytes of
+  states (e.g. a climate with fan / swing modes, presets and humidity: `tpdo: [4, 5]`). See
+  [TPDO layout](../OBJECT_DICTIONARY.md#tpdo-layout).
 * `rpdo` (Optional, list of `RPDO` schema, see below): states of other nodes, received from their TPDOs and written
   into this entity's commands.
 * `size` (Optional, int, `sensor` / `number` only): size of the state on the wire: `4` (default, REAL32), `1` (scaled
@@ -70,9 +73,12 @@ One `canopen_entities:` per firmware.
 * `min_value` (Optional, float, default=0): minimal value for scaled states (`size` 1 or 2).
 * `max_value` (Optional, float, default=254 for `size: 1`, 65534 for `size: 2`): maximal value for scaled states
   (`size` 1 or 2).
-* `caps` (Optional, list, `light` / `cover` only): capabilities of the entity, needed only for platforms whose
-  capabilities the component can't derive from the config (the build fails with a hint). Light: `on_off`,
-  `brightness`, `color_temperature`; cover: `position`, `tilt`. See [TPDO layout](../OBJECT_DICTIONARY.md#tpdo-layout).
+* `caps` (Optional, list, `light` / `cover` / `climate` only): capabilities of the entity, needed only for platforms
+  whose capabilities the component can't derive from the config (the build fails with a hint). Light: `on_off`,
+  `brightness`, `color_temperature`; cover: `position`, `tilt`; climate: `current_temperature`, `two_point`,
+  `action`, `fan_mode`, `swing_mode`, `preset`, `current_humidity`, `target_humidity` (known: `thermostat`,
+  `bang_bang`, `pid` and the IR climates based on `climate_ir`, see [Climate](../OBJECT_DICTIONARY.md#climate)). See
+  [TPDO layout](../OBJECT_DICTIONARY.md#tpdo-layout).
 
 ## `TPDO` schema
 Any of:

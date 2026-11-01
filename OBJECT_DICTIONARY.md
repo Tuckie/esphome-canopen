@@ -146,6 +146,72 @@ EntityTypeCode: 9 (Number8, `size: 1`), 10 (Number16, `size: 2`)
 |||||||
 | 0x2002 + 0x10 * N | 0x01     | Number #N Command       | UINT8 / UINT16 | W | [scaled](#scaled-values), publishes given value as number state |
 
+## Climate
+EntityTypeCode: 11, version: 1
+
+Capabilities: bit 0 - current temperature, bit 1 - two-point target temperature (low / high set points instead of
+one), bit 2 - action, bit 3 - fan mode, bit 4 - swing mode, bit 5 - preset, bit 6 - current humidity, bit 7 - target
+humidity. Determined at build time from the climate platform config, otherwise with the entity's `caps` option:
+
+* `thermostat`: current temperature and action; two-point with `heat_action` and `cool_action` (or `heat_action`,
+  `fan_only_action` and `fan_only_cooling: true`); fan mode with any `fan_mode_*_action`; swing mode with any
+  `swing_*_action`; preset with `preset:`; current humidity with `humidity_sensor:`; target humidity with
+  `humidity_control_humidify_action` or `humidity_control_dehumidify_action`
+* `bang_bang`: current temperature, two-point, action; preset with `away_config:`; current humidity with
+  `humidity_sensor:`
+* `pid`: current temperature, action; current humidity with `humidity_sensor:`
+* `climate_ir` based platforms: current temperature / humidity with `sensor:` / `humidity_sensor:`; fan and swing
+  modes (`toshiba`, `whynter`: fan mode only), presets for `midea_ir`, `mitsubishi`, `zhlt01`; `daikin_arc` always
+  has current temperature and target humidity
+
+States are added in this order, absent ones skipped, so subindices are assigned in order. The writable states come
+first, each with a command at the same subindex; action, current temperature and current humidity are read-only.
+A climate with all capabilities has 13 bytes of states, more than a TPDO: give it a list of TPDOs (`tpdo: [4, 5]`,
+see [TPDO layout](#tpdo-layout)).
+
+Encodings:
+
+* temperatures: °C, UINT16 [scaled](#scaled-values) to -327.67..327.67, `wire = round(100 * (value + 327.67))`,
+  0.01 °C steps, 65535 = unknown
+* humidities: %, UINT8, rounded, 255 = unknown
+* mode: 0 - off, 1 - heat_cool, 2 - cool, 3 - heat, 4 - fan_only, 5 - dry, 6 - auto
+* action: 0 - off, 2 - cooling, 3 - heating, 4 - idle, 5 - drying, 6 - fan, 7 - defrosting
+* fan mode: 0 - on, 1 - off, 2 - auto, 3 - low, 4 - medium, 5 - high, 6 - middle, 7 - focus, 8 - diffuse,
+  9 - quiet, 10 + n - custom fan mode n (`0x2000+0x10*N:0x0E`), 255 - none
+* swing mode: 0 - off, 1 - both, 2 - vertical, 3 - horizontal
+* preset: 0 - none, 1 - home, 2 - away, 3 - boost, 4 - comfort, 5 - eco, 6 - sleep, 7 - activity, 8 + n - custom
+  preset n (`0x2000+0x10*N:0x0F`), 255 - none
+
+Commands with an unknown value (65535 / 255, a code out of range) are ignored.
+
+| Index             | SubIndex | Object Name             | Type   | Access | Description     |
+|-------------------|----------|-------------------------|--------|:------:|-|
+| 0x2000 + 0x10 * N | 0x07     | Climate #N min_temp     | REAL32 | R      | visual min temperature (°C) |
+|                   | 0x08     | Climate #N max_temp     | REAL32 | R      | visual max temperature (°C) |
+|                   | 0x09     | Climate #N modes        | UINT32 | R      | supported modes, bit n = mode code n |
+|                   | 0x0A     | Climate #N temp_step    | REAL32 | R      | visual target temperature step (°C) |
+|                   | 0x0B     | Climate #N fan_modes    | UINT32 | R      | fan mode only: supported standard fan modes, bit n = code n |
+|                   | 0x0C     | Climate #N swing_modes  | UINT32 | R      | swing mode only: supported swing modes, bit n = code n |
+|                   | 0x0D     | Climate #N presets      | UINT32 | R      | preset only: supported standard presets, bit n = code n |
+|                   | 0x0E     | Climate #N custom_fan_modes | String | R  | fan mode only, if any: names, `\n` separated |
+|                   | 0x0F     | Climate #N custom_presets | String | R    | preset only, if any: names, `\n` separated |
+|                   | 0x10     | Climate #N min_humidity | REAL32 | R      | humidity only: visual min humidity (%) |
+|                   | 0x11     | Climate #N max_humidity | REAL32 | R      | humidity only: visual max humidity (%) |
+|||||||
+| 0x2001 + 0x10 * N | 0x01     | Climate #N Mode         | UINT8  | R      | |
+|                   | next     | Climate #N TargetTemp   | UINT16 | R      | single set point only |
+|                   | next     | Climate #N TargetTempLow  | UINT16 | R    | two-point only |
+|                   | next     | Climate #N TargetTempHigh | UINT16 | R    | two-point only |
+|                   | next     | Climate #N FanMode      | UINT8  | R      | |
+|                   | next     | Climate #N SwingMode    | UINT8  | R      | |
+|                   | next     | Climate #N Preset       | UINT8  | R      | |
+|                   | next     | Climate #N TargetHumidity | UINT8 | R     | |
+|                   | next     | Climate #N Action       | UINT8  | R      | read only |
+|                   | next     | Climate #N CurrentTemp  | UINT16 | R      | read only |
+|                   | next     | Climate #N CurrentHumidity | UINT8 | R    | read only |
+|||||||
+| 0x2002 + 0x10 * N | 0x01..   | Climate #N Set...       | as the state | W | one per state, same subindex; those of the read-only states are ignored |
+
 ## Alarm Control Panel
 
 EntityTypeCode: 16
@@ -187,6 +253,11 @@ States of entities with `tpdo` configured are mapped to TPDO with given number, 
 The TPDO layout (which states an entity has and where they are in the TPDO) is computed at build time from the
 YAML config (`components/canopen_entities/layout.py`): states of `template_entities` first, then entities by index, each
 with its states in subindex order. A TPDO can carry at most 8 bytes.
+
+An entity with a list of TPDOs (`tpdo: [4, 5]`) is spread over them: in that order, each of its states goes to the
+first listed TPDO with room left for it (taking the states mapped before into account). The build fails if a
+state fits none of them. Its states can end up in different TPDOs, so a remote node mirrors each state from the
+TPDO it is in.
 
 Light / cover capabilities come from the platform config (e.g. `cwww`, `monochromatic`, `time_based`,
 `template` with `has_position` / `tilt_action`). For platforms the component doesn't know, set them with the

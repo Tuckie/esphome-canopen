@@ -2,6 +2,7 @@
 
 #include <array>
 #include <span>
+#include <vector>
 
 #include "esphome/components/canopen/canopen.h"
 #include "esphome/core/automation.h"
@@ -31,6 +32,14 @@
 #ifdef USE_ALARM_CONTROL_PANEL
 #include "esphome/components/alarm_control_panel/alarm_control_panel.h"
 #endif
+#ifdef USE_CLIMATE
+#include "esphome/components/climate/climate.h"
+#endif
+
+// the most states of one entity (layout.py), from codegen: 3 (light, cover) unless a climate needs more
+#ifndef CANOPEN_ENTITIES_MAX_STATES
+#define CANOPEN_ENTITIES_MAX_STATES 3
+#endif
 
 namespace esphome::canopen_entities {
 
@@ -46,17 +55,32 @@ enum EntityType : uint8_t {
   ENTITY_TYPE_NUMBER = 8,
   ENTITY_TYPE_NUMBER_UINT8 = 9,
   ENTITY_TYPE_NUMBER_UINT16 = 10,
+  ENTITY_TYPE_CLIMATE = 11,
   ENTITY_TYPE_ALARM = 16,
 };
 
-// light / cover capability bits (0x2001:N bits 16..23), from codegen (layout.py)
+// light / cover / climate capability bits (0x2001:N bits 16..23), from codegen (layout.py)
 enum : uint32_t {
   LIGHT_CAP_ON_OFF = 1,
   LIGHT_CAP_BRIGHTNESS = 2,
   LIGHT_CAP_COLOR_TEMPERATURE = 4,
   COVER_CAP_POSITION = 1,
   COVER_CAP_TILT = 2,
+  CLIMATE_CAP_CURRENT_TEMPERATURE = 1,
+  CLIMATE_CAP_TWO_POINT = 2,
+  CLIMATE_CAP_ACTION = 4,
+  CLIMATE_CAP_FAN_MODE = 8,
+  CLIMATE_CAP_SWING_MODE = 16,
+  CLIMATE_CAP_PRESET = 32,
+  CLIMATE_CAP_CURRENT_HUMIDITY = 64,
+  CLIMATE_CAP_TARGET_HUMIDITY = 128,
 };
+
+// climate fan mode / preset codes: the standard ones, then custom n = base + n (layout.py CLIMATE_CUSTOM_*_BASE),
+// 255 none
+static constexpr uint32_t CLIMATE_CUSTOM_FAN_MODE_BASE = 10;
+static constexpr uint32_t CLIMATE_CUSTOM_PRESET_BASE = 8;
+static constexpr uint32_t CLIMATE_CODE_NONE = 255;
 
 // wire encoding of scaled states and commands, see "Scaled values" in OBJECT_DICTIONARY.md (max_int = NaN)
 uint32_t scale_to_wire(float value, float min_val, float max_val, uint32_t max_int);
@@ -65,14 +89,37 @@ inline uint32_t percentage_to_wire(float value) { return scale_to_wire(value, 0.
 inline float percentage_from_wire(uint32_t wire) { return scale_from_wire(wire, 0.0f, 1.0f, 255); }
 inline uint32_t color_temp_to_wire(float mireds) { return scale_to_wire(mireds, 100.0f, 1000.0f, 255); }
 inline float color_temp_from_wire(uint32_t wire) { return scale_from_wire(wire, 100.0f, 1000.0f, 255); }
+// climate temperatures: UINT16, 0.01 degC steps over -327.67..327.67 (layout.py TEMPERATURE_MIN / MAX)
+inline uint32_t temperature_to_wire(float celsius) { return scale_to_wire(celsius, -327.67f, 327.67f, 65535); }
+inline float temperature_from_wire(uint32_t wire) { return scale_from_wire(wire, -327.67f, 327.67f, 65535); }
+// climate humidities: UINT8 %, rounded
+inline uint32_t humidity_to_wire(float percent) { return scale_to_wire(percent, 0.0f, 254.0f, 255); }
+inline float humidity_from_wire(uint32_t wire) { return scale_from_wire(wire, 0.0f, 254.0f, 255); }
 
+#ifdef USE_CLIMATE
+// what a climate entity adds to MappedEntity (allocated for climates only): its metadata and the subindex of each
+// state (0 = absent), in layout.py order
+struct ClimateInfo {
+  uint32_t modes{0};                           // meta 9: bit n = mode n
+  float temperature_step{0};                   // meta 10
+  uint32_t fan_modes{0};                       // meta 11
+  uint32_t swing_modes{0};                     // meta 12
+  uint32_t presets{0};                         // meta 13
+  float min_humidity{0};                       // meta 16
+  float max_humidity{0};                       // meta 17
+  std::vector<const char *> custom_fan_modes;  // meta 14, names in the climate
+  std::vector<const char *> custom_presets;    // meta 15
+  uint8_t mode{0}, target{0}, target_low{0}, target_high{0}, fan_mode{0}, swing_mode{0}, preset{0}, target_humidity{0},
+      action{0}, current{0}, current_humidity{0};
+};
+#endif
 // One exposed entity: metadata at 0x2000 + 16 * index, states at 0x2001 + 16 * index, commands at 0x2002 + 16 * index
 // (one per state, same size; write only, RPDO mappable). As the handler of the three records it reads the metadata
 // strings from the entity on each upload (no copies), gives the states their TPDO request flags and runs the commands.
 // Callbacks capture only the MappedEntity pointer.
 class MappedEntity : public canopen::OdObject {
  public:
-  static constexpr size_t MAX_STATES = 3;
+  static constexpr size_t MAX_STATES = CANOPEN_ENTITIES_MAX_STATES;
 
   void init(canopen::CANopenComponent *hub, EntityBase *entity, uint8_t index, uint32_t type);
 
@@ -108,6 +155,10 @@ class MappedEntity : public canopen::OdObject {
 #ifdef USE_LIGHT
   void update_light();
 #endif
+#ifdef USE_CLIMATE
+  void init_climate(ClimateInfo *info) { this->climate_ = info; }
+  void update_climate();
+#endif
 
   canopen::OdResult od_read(canopen::OdStream stream, void *buf, size_t count, size_t *done);
   canopen::OdResult od_write(canopen::OdStream stream, const void *buf, size_t count, size_t *done);
@@ -125,6 +176,12 @@ class MappedEntity : public canopen::OdObject {
 #endif
 #ifdef USE_ALARM_CONTROL_PANEL
   void alarm_command_(uint32_t value);
+#endif
+#ifdef USE_CLIMATE
+  void climate_command_(uint8_t sub, uint32_t value);
+  // custom fan mode / preset names (meta 14 / 15), '\n' separated, read from offset into buf
+  size_t climate_names_read_(uint8_t sub, size_t offset, void *buf, size_t count, size_t *total) const;
+  ClimateInfo *climate_{nullptr};
 #endif
 
   canopen::CANopenComponent *hub_{nullptr};
@@ -211,6 +268,9 @@ class CANopenEntities : public Component {
 #ifdef USE_ALARM_CONTROL_PANEL
   void add_alarm(alarm_control_panel::AlarmControlPanel *alarm, uint8_t index);
 #endif
+#ifdef USE_CLIMATE
+  void add_climate(climate::Climate *climate, uint8_t index, uint32_t caps);
+#endif
 
   // adds the OD entries: before the hub's setup()
   void setup() override;
@@ -266,7 +326,7 @@ uint32_t encode_remote_cmd(uint8_t encoding, float value, uint8_t size, float mi
 // canopen_entities.<domain>.<action>: writes one or more commands of a remote node's entity with the OD writer
 template<typename... Ts> class RemoteCommandAction : public Action<Ts...>, public Parented<CANopenEntities> {
  public:
-  static constexpr size_t MAX_WRITES = 3;  // MAX_WRITES in __init__.py
+  static constexpr size_t MAX_WRITES = 8;  // MAX_WRITES in __init__.py
 
   void set_target(uint8_t node_id, uint8_t entity_index) {
     this->node_id_ = node_id;

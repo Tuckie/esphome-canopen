@@ -28,6 +28,18 @@ static constexpr uint8_t META_UNIT = 3;
 static constexpr uint8_t META_STATE_CLASS = 4;
 static constexpr uint8_t META_MIN_VALUE = 7;
 static constexpr uint8_t META_MAX_VALUE = 8;
+// climate, see Climate in OBJECT_DICTIONARY.md
+static constexpr uint8_t META_CLIMATE_MODES = 9;
+static constexpr uint8_t META_CLIMATE_TEMPERATURE_STEP = 10;
+static constexpr uint8_t META_CLIMATE_FAN_MODES = 11;
+static constexpr uint8_t META_CLIMATE_SWING_MODES = 12;
+static constexpr uint8_t META_CLIMATE_PRESETS = 13;
+static constexpr uint8_t META_CLIMATE_CUSTOM_FAN_MODES = 14;
+static constexpr uint8_t META_CLIMATE_CUSTOM_PRESETS = 15;
+static constexpr uint8_t META_CLIMATE_MIN_HUMIDITY = 16;
+static constexpr uint8_t META_CLIMATE_MAX_HUMIDITY = 17;
+// metadata record: sub 0, 4 strings, min / max, 9 climate entries
+static constexpr size_t META_MAX_ENTRIES = 16;
 
 uint32_t scale_to_wire(float value, float min_val, float max_val, uint32_t max_int) {
   if (std::isnan(value))
@@ -124,6 +136,20 @@ size_t MappedEntity::meta_string_(uint8_t sub, std::span<char, ENTITY_NAME_BUF_S
 
 OdResult MappedEntity::od_read(canopen::OdStream stream, void *buf, size_t count, size_t *done) {
   uint8_t sub = stream.sub();
+#ifdef USE_CLIMATE
+  if (this->climate_ != nullptr && stream.index() == this->meta_index() &&
+      (sub == META_CLIMATE_CUSTOM_FAN_MODES || sub == META_CLIMATE_CUSTOM_PRESETS)) {
+    // names joined on the fly: no copy of the whole list
+    size_t total;
+    size_t offset = stream.offset();
+    size_t n = this->climate_names_read_(sub, offset, buf, count, &total);
+    if (offset == 0)
+      stream.set_size(total);
+    stream.set_offset(offset + n);
+    *done = n;
+    return offset + n < total ? OdResult::OD_RESULT_PARTIAL : OdResult::OD_RESULT_OK;
+  }
+#endif
   if (stream.index() != this->meta_index() || sub < META_NAME || sub > META_STATE_CLASS)
     return stream.read_original(buf, count, done);
   // a metadata string: copied out of the entity (flash on ESP8266) for every chunk
@@ -195,6 +221,11 @@ void MappedEntity::command_(uint8_t sub, uint32_t value) {
       this->alarm_command_(value);
       break;
 #endif
+#ifdef USE_CLIMATE
+    case ENTITY_TYPE_CLIMATE:
+      this->climate_command_(sub, value);
+      break;
+#endif
     default:
       break;
   }
@@ -202,7 +233,7 @@ void MappedEntity::command_(uint8_t sub, uint32_t value) {
 
 void MappedEntity::add_to_od(canopen::ObjectDictionary &od) {
   // metadata: strings only if not empty (can2mqtt skips missing subindices), read by od_read()
-  std::array<RecordSub, 7> meta;
+  std::array<RecordSub, META_MAX_ENTRIES> meta;
   size_t n = 0;
   meta[n++] = {0, OD_READ, &this->meta_highest_, 1};
   char str[ENTITY_NAME_BUF_SIZE];
@@ -214,6 +245,28 @@ void MappedEntity::add_to_od(canopen::ObjectDictionary &od) {
     meta[n++] = {META_MIN_VALUE, OD_READ, &this->min_value_, 4};
     meta[n++] = {META_MAX_VALUE, OD_READ, &this->max_value_, 4};
   }
+#ifdef USE_CLIMATE
+  if (ClimateInfo *info = this->climate_) {
+    uint32_t caps = this->get_caps();
+    meta[n++] = {META_CLIMATE_MODES, OD_READ, &info->modes, 4};
+    meta[n++] = {META_CLIMATE_TEMPERATURE_STEP, OD_READ, &info->temperature_step, 4};
+    if (caps & CLIMATE_CAP_FAN_MODE)
+      meta[n++] = {META_CLIMATE_FAN_MODES, OD_READ, &info->fan_modes, 4};
+    if (caps & CLIMATE_CAP_SWING_MODE)
+      meta[n++] = {META_CLIMATE_SWING_MODES, OD_READ, &info->swing_modes, 4};
+    if (caps & CLIMATE_CAP_PRESET)
+      meta[n++] = {META_CLIMATE_PRESETS, OD_READ, &info->presets, 4};
+    if ((caps & CLIMATE_CAP_FAN_MODE) && !info->custom_fan_modes.empty())
+      meta[n++] = {META_CLIMATE_CUSTOM_FAN_MODES, OD_READ, nullptr, 0};
+    if ((caps & CLIMATE_CAP_PRESET) && !info->custom_presets.empty())
+      meta[n++] = {META_CLIMATE_CUSTOM_PRESETS, OD_READ, nullptr, 0};
+    if (caps & (CLIMATE_CAP_CURRENT_HUMIDITY | CLIMATE_CAP_TARGET_HUMIDITY)) {
+      meta[n++] = {META_CLIMATE_MIN_HUMIDITY, OD_READ, &info->min_humidity, 4};
+      meta[n++] = {META_CLIMATE_MAX_HUMIDITY, OD_READ, &info->max_humidity, 4};
+    }
+    this->meta_highest_ = meta[n - 1].sub;
+  }
+#endif
   od.add_record(this->meta_index(), meta.data(), n);
   od.set_object(this->meta_index(), this);
 
@@ -461,6 +514,224 @@ void MappedEntity::alarm_command_(uint32_t value) {
     default:
       break;
   }
+}
+#endif
+
+#ifdef USE_CLIMATE
+// fills the subindex of each state in layout.py order (entity_state_kinds()); returns the next free subindex
+static uint8_t climate_layout(ClimateInfo *info, uint32_t caps) {
+  uint8_t sub = 1;
+  info->mode = sub++;
+  if (caps & CLIMATE_CAP_TWO_POINT) {
+    info->target_low = sub++;
+    info->target_high = sub++;
+  } else {
+    info->target = sub++;
+  }
+  // the writable ones first, then the read-only ones
+  if (caps & CLIMATE_CAP_FAN_MODE)
+    info->fan_mode = sub++;
+  if (caps & CLIMATE_CAP_SWING_MODE)
+    info->swing_mode = sub++;
+  if (caps & CLIMATE_CAP_PRESET)
+    info->preset = sub++;
+  if (caps & CLIMATE_CAP_TARGET_HUMIDITY)
+    info->target_humidity = sub++;
+  if (caps & CLIMATE_CAP_ACTION)
+    info->action = sub++;
+  if (caps & CLIMATE_CAP_CURRENT_TEMPERATURE)
+    info->current = sub++;
+  if (caps & CLIMATE_CAP_CURRENT_HUMIDITY)
+    info->current_humidity = sub++;
+  return sub;
+}
+
+void CANopenEntities::add_climate(climate::Climate *climate, uint8_t index, uint32_t caps) {
+  // version 1: caps in bits 16..23
+  MappedEntity *entity = this->add_entity_(climate, index, ENTITY_TYPE_CLIMATE | (1 << 8) | (caps << 16));
+  if (entity == nullptr)
+    return;
+  // lives as long as the climate: allocated once, while the configuration is set up
+  auto *info = new ClimateInfo();  // NOLINT(cppcoreguidelines-owning-memory)
+  auto traits = climate->get_traits();
+  for (uint8_t mode = climate::CLIMATE_MODE_OFF; mode <= climate::CLIMATE_MODE_AUTO; mode++) {
+    if (traits.supports_mode(static_cast<climate::ClimateMode>(mode)))
+      info->modes |= 1 << mode;
+  }
+  for (uint8_t mode = climate::CLIMATE_FAN_ON; mode <= climate::CLIMATE_FAN_QUIET; mode++) {
+    if (traits.supports_fan_mode(static_cast<climate::ClimateFanMode>(mode)))
+      info->fan_modes |= 1 << mode;
+  }
+  for (uint8_t mode = climate::CLIMATE_SWING_OFF; mode <= climate::CLIMATE_SWING_HORIZONTAL; mode++) {
+    if (traits.supports_swing_mode(static_cast<climate::ClimateSwingMode>(mode)))
+      info->swing_modes |= 1 << mode;
+  }
+  for (uint8_t preset = climate::CLIMATE_PRESET_NONE; preset <= climate::CLIMATE_PRESET_ACTIVITY; preset++) {
+    if (traits.supports_preset(static_cast<climate::ClimatePreset>(preset)))
+      info->presets |= 1 << preset;
+  }
+  info->temperature_step = traits.get_visual_target_temperature_step();
+  info->min_humidity = traits.get_visual_min_humidity();
+  info->max_humidity = traits.get_visual_max_humidity();
+  // copies of the name pointers (the strings live in the climate)
+  const auto &fan_modes = traits.get_supported_custom_fan_modes();
+  info->custom_fan_modes.assign(fan_modes.begin(), fan_modes.end());
+  const auto &presets = traits.get_supported_custom_presets();
+  info->custom_presets.assign(presets.begin(), presets.end());
+  entity->set_min_max(traits.get_visual_min_temperature(), traits.get_visual_max_temperature());
+
+  // caps (and so the OD layout) come from codegen, traits are only checked
+  uint32_t traits_caps = 0;
+  if (traits.has_feature_flags(climate::CLIMATE_SUPPORTS_CURRENT_TEMPERATURE))
+    traits_caps |= CLIMATE_CAP_CURRENT_TEMPERATURE;
+  if (traits.has_feature_flags(climate::CLIMATE_SUPPORTS_TWO_POINT_TARGET_TEMPERATURE |
+                               climate::CLIMATE_REQUIRES_TWO_POINT_TARGET_TEMPERATURE))
+    traits_caps |= CLIMATE_CAP_TWO_POINT;
+  if (traits.has_feature_flags(climate::CLIMATE_SUPPORTS_ACTION))
+    traits_caps |= CLIMATE_CAP_ACTION;
+  if (traits.get_supports_fan_modes())
+    traits_caps |= CLIMATE_CAP_FAN_MODE;
+  if (traits.get_supports_swing_modes())
+    traits_caps |= CLIMATE_CAP_SWING_MODE;
+  if (traits.get_supports_presets() || !info->custom_presets.empty())
+    traits_caps |= CLIMATE_CAP_PRESET;
+  if (traits.has_feature_flags(climate::CLIMATE_SUPPORTS_CURRENT_HUMIDITY))
+    traits_caps |= CLIMATE_CAP_CURRENT_HUMIDITY;
+  if (traits.has_feature_flags(climate::CLIMATE_SUPPORTS_TARGET_HUMIDITY))
+    traits_caps |= CLIMATE_CAP_TARGET_HUMIDITY;
+  if (traits_caps != caps) {
+    ESP_LOGW(TAG, "Entity %u: climate caps from the config 0x%02" PRIx32 " differ from its traits 0x%02" PRIx32, index,
+             caps, traits_caps);
+  }
+
+  // states in layout.py order, sizes: temperatures 2 bytes, the rest 1
+  uint8_t end = climate_layout(info, caps);
+  for (uint8_t sub = 1; sub < end; sub++) {
+    bool temperature =
+        sub == info->target || sub == info->target_low || sub == info->target_high || sub == info->current;
+    entity->add_state(temperature ? 2 : 1, 0);
+  }
+  entity->init_climate(info);
+  entity->update_climate();
+  climate->add_on_state_callback([entity](climate::Climate & /*unused*/) { entity->update_climate(); });
+}
+
+static int find_name(const std::vector<const char *> &names, StringRef name) {
+  for (size_t i = 0; i < names.size(); i++) {
+    if (name == names[i])
+      return i;
+  }
+  return -1;
+}
+
+void MappedEntity::update_climate() {
+  auto *climate = static_cast<climate::Climate *>(this->entity_);
+  ClimateInfo *info = this->climate_;
+  this->set_state(info->mode, climate->mode);
+  this->set_state(info->target, temperature_to_wire(climate->target_temperature));
+  this->set_state(info->target_low, temperature_to_wire(climate->target_temperature_low));
+  this->set_state(info->target_high, temperature_to_wire(climate->target_temperature_high));
+  if (info->fan_mode != 0) {
+    uint32_t code = CLIMATE_CODE_NONE;
+    if (climate->has_custom_fan_mode()) {
+      int pos = find_name(info->custom_fan_modes, climate->get_custom_fan_mode());
+      if (pos >= 0 && CLIMATE_CUSTOM_FAN_MODE_BASE + pos < CLIMATE_CODE_NONE)
+        code = CLIMATE_CUSTOM_FAN_MODE_BASE + pos;
+    } else if (climate->fan_mode.has_value()) {
+      code = *climate->fan_mode;
+    }
+    this->set_state(info->fan_mode, code);
+  }
+  this->set_state(info->swing_mode, climate->swing_mode);
+  if (info->preset != 0) {
+    uint32_t code = CLIMATE_CODE_NONE;
+    if (climate->has_custom_preset()) {
+      int pos = find_name(info->custom_presets, climate->get_custom_preset());
+      if (pos >= 0 && CLIMATE_CUSTOM_PRESET_BASE + pos < CLIMATE_CODE_NONE)
+        code = CLIMATE_CUSTOM_PRESET_BASE + pos;
+    } else if (climate->preset.has_value()) {
+      code = *climate->preset;
+    }
+    this->set_state(info->preset, code);
+  }
+  this->set_state(info->target_humidity, humidity_to_wire(climate->target_humidity));
+  this->set_state(info->action, climate->action);
+  this->set_state(info->current, temperature_to_wire(climate->current_temperature));
+  this->set_state(info->current_humidity, humidity_to_wire(climate->current_humidity));
+}
+
+// commands of the writable states; unknown values (NaN, codes out of range) and the read-only states are ignored
+void MappedEntity::climate_command_(uint8_t sub, uint32_t value) {
+  auto *climate = static_cast<climate::Climate *>(this->entity_);
+  ClimateInfo *info = this->climate_;
+  auto call = climate->make_call();
+  if (sub == info->mode) {
+    if (value > climate::CLIMATE_MODE_AUTO)
+      return;
+    call.set_mode(static_cast<climate::ClimateMode>(value));
+  } else if (sub == info->target || sub == info->target_low || sub == info->target_high) {
+    float celsius = temperature_from_wire(value);
+    if (std::isnan(celsius))
+      return;
+    if (sub == info->target) {
+      call.set_target_temperature(celsius);
+    } else if (sub == info->target_low) {
+      call.set_target_temperature_low(celsius);
+    } else {
+      call.set_target_temperature_high(celsius);
+    }
+  } else if (sub == info->fan_mode) {
+    if (value <= climate::CLIMATE_FAN_QUIET) {
+      call.set_fan_mode(static_cast<climate::ClimateFanMode>(value));
+    } else if (value >= CLIMATE_CUSTOM_FAN_MODE_BASE &&
+               value - CLIMATE_CUSTOM_FAN_MODE_BASE < info->custom_fan_modes.size()) {
+      call.set_fan_mode(info->custom_fan_modes[value - CLIMATE_CUSTOM_FAN_MODE_BASE]);
+    } else {
+      return;
+    }
+  } else if (sub == info->swing_mode) {
+    if (value > climate::CLIMATE_SWING_HORIZONTAL)
+      return;
+    call.set_swing_mode(static_cast<climate::ClimateSwingMode>(value));
+  } else if (sub == info->preset) {
+    if (value <= climate::CLIMATE_PRESET_ACTIVITY) {
+      call.set_preset(static_cast<climate::ClimatePreset>(value));
+    } else if (value >= CLIMATE_CUSTOM_PRESET_BASE &&
+               value - CLIMATE_CUSTOM_PRESET_BASE < info->custom_presets.size()) {
+      call.set_preset(info->custom_presets[value - CLIMATE_CUSTOM_PRESET_BASE]);
+    } else {
+      return;
+    }
+  } else if (sub == info->target_humidity) {
+    float percent = humidity_from_wire(value);
+    if (std::isnan(percent))
+      return;
+    call.set_target_humidity(percent);
+  } else {
+    return;  // action, current temperature / humidity: read only
+  }
+  call.perform();
+}
+
+size_t MappedEntity::climate_names_read_(uint8_t sub, size_t offset, void *buf, size_t count, size_t *total) const {
+  const auto &names =
+      sub == META_CLIMATE_CUSTOM_FAN_MODES ? this->climate_->custom_fan_modes : this->climate_->custom_presets;
+  auto *out = static_cast<char *>(buf);
+  size_t pos = 0;  // position in the joined string
+  size_t n = 0;
+  auto emit = [&](const char *str, size_t len) {
+    for (size_t i = 0; i < len; i++, pos++) {
+      if (pos >= offset && n < count)
+        out[n++] = str[i];
+    }
+  };
+  for (size_t i = 0; i < names.size(); i++) {
+    if (i != 0)
+      emit("\n", 1);
+    emit(names[i], std::strlen(names[i]));
+  }
+  *total = pos;
+  return n;
 }
 #endif
 

@@ -94,6 +94,7 @@ ENTITY_DOMAINS = [
         cg.esphome_ns.namespace("alarm_control_panel").class_("AlarmControlPanel"),
         layout.DOMAIN_ALARM,
     ),
+    (cg.esphome_ns.namespace("climate").class_("Climate"), layout.DOMAIN_CLIMATE),
 ]
 
 TPDO_SCHEMA = cv.Schema(
@@ -163,10 +164,16 @@ ENTITY_SCHEMA = cv.Schema(
         cv.Optional(CONF_SIZE): cv.one_of(1, 2, 4, int=True),
         cv.Optional(CONF_MIN_VALUE): cv.float_,
         cv.Optional(CONF_MAX_VALUE): cv.float_,
+        # one TPDO, or a list: the entity's states go to the first listed TPDO with room (layout.assign_tpdos())
         cv.Optional(CONF_TPDO): cv.Any(
-            cv.int_range(min=0, max=layout.TPDO_COUNT - 1), TPDO_SCHEMA
+            cv.int_range(min=0, max=layout.TPDO_COUNT - 1),
+            TPDO_SCHEMA,
+            cv.All(
+                [cv.Any(cv.int_range(min=0, max=layout.TPDO_COUNT - 1), TPDO_SCHEMA)],
+                cv.Length(min=1),
+            ),
         ),
-        # light / cover capabilities, for platforms not known to layout.py
+        # light / cover / climate capabilities, for platforms not known to layout.py
         cv.Optional(CONF_CAPS): cv.ensure_list(cv.string),
         # remote states written into this entity's commands by RPDO (resolve_remote_rpdo())
         cv.Optional(CONF_RPDO): cv.ensure_list(validate_rpdo),
@@ -233,7 +240,7 @@ def validate_od_writer_tpdo(config: ConfigType) -> ConfigType:
     if not config[CONF_OD_WRITER]:
         return config
     for pos, entity in enumerate(config[CONF_ENTITIES]):
-        if CONF_TPDO in entity and layout.tpdo_number(entity) == OD_WRITER_TPDO:
+        if CONF_TPDO in entity and OD_WRITER_TPDO in layout.tpdo_numbers(entity):
             raise cv.Invalid(
                 f"TPDO {OD_WRITER_TPDO} is reserved for the OD writer (od_writer: false frees it)",
                 path=[CONF_ENTITIES, pos, CONF_TPDO],
@@ -540,6 +547,23 @@ async def to_code(config: ConfigType) -> None:
 
     # the mapper keeps its entities in a StaticVector of this size
     cg.add_define("CANOPEN_ENTITIES_ENTITIES", max(1, len(config[CONF_ENTITIES])))
+    # MappedEntity's state arrays: the most states of one entity (a climate can have up to 11)
+    max_states = max(
+        (
+            len(
+                layout.entity_states(
+                    domain,
+                    layout.entity_caps(domain, conf, entity.get(CONF_CAPS)),
+                    entity.get(CONF_SIZE),
+                )
+            )
+            for entity in config[CONF_ENTITIES]
+            for domain, conf in [resolve_entity(CORE.config, entity)]
+        ),
+        default=3,
+    )
+    if max_states > 3:
+        cg.add_define("CANOPEN_ENTITIES_MAX_STATES", max_states)
     var = cg.new_Pvariable(config[CONF_ID], hub)
     await cg.register_component(var, config)
     cg.add(var.set_node_id(node_id))
@@ -582,12 +606,20 @@ async def to_code(config: ConfigType) -> None:
             cg.add(var.add_binary_sensor(entity, index))
         elif domain == layout.DOMAIN_SWITCH:
             cg.add(var.add_switch(entity, index))
-        elif domain in (layout.DOMAIN_LIGHT, layout.DOMAIN_COVER):
+        elif domain in (
+            layout.DOMAIN_LIGHT,
+            layout.DOMAIN_COVER,
+            layout.DOMAIN_CLIMATE,
+        ):
             # the OD layout depends on the caps: computed here (layout.py), not from the traits at runtime
             caps = layout.entity_caps(
                 domain, platform_config, entity_config.get(CONF_CAPS)
             )
-            add = var.add_light if domain == layout.DOMAIN_LIGHT else var.add_cover
+            add = {
+                layout.DOMAIN_LIGHT: var.add_light,
+                layout.DOMAIN_COVER: var.add_cover,
+                layout.DOMAIN_CLIMATE: var.add_climate,
+            }[domain]
             cg.add(add(entity, index, caps))
         elif domain == layout.DOMAIN_ALARM:
             cg.add(var.add_alarm(entity, index))
@@ -671,8 +703,8 @@ ENC_REAL32 = 4
 TOGGLE_BOOL = ("toggle", "s ? 0.0f : 1.0f")
 # moving (1 opening, 3 closing) -> stop (0); closed (2) -> open (1); open (0) -> close (2)
 TOGGLE_COVER = ("toggle", "(s == 1 || s == 3) ? 0.0f : (s == 2 ? 1.0f : 2.0f)")
-# writes per action: light turn_on writes brightness, color temperature and state
-MAX_WRITES = 3
+# writes per action: climate control writes up to 8 (set points, fan / swing mode, preset, humidity, mode)
+MAX_WRITES = 8
 
 REMOTE_ACTION_SCHEMA = cv.Schema(
     {
@@ -910,6 +942,152 @@ for _action, _code in (
         (layout.DOMAIN_ALARM,),
         _const_writes(_code),
     )
+# climate modes, see Climate in OBJECT_DICTIONARY.md (esphome climate::ClimateMode)
+CLIMATE_MODES = {
+    "OFF": 0,
+    "HEAT_COOL": 1,
+    "COOL": 2,
+    "HEAT": 3,
+    "FAN_ONLY": 4,
+    "DRY": 5,
+    "AUTO": 6,
+}
+
+
+CLIMATE_FAN_MODES = {
+    name: code
+    for code, name in enumerate(
+        (
+            "ON",
+            "OFF",
+            "AUTO",
+            "LOW",
+            "MEDIUM",
+            "HIGH",
+            "MIDDLE",
+            "FOCUS",
+            "DIFFUSE",
+            "QUIET",
+        )
+    )
+}
+CLIMATE_SWING_MODES = {"OFF": 0, "BOTH": 1, "VERTICAL": 2, "HORIZONTAL": 3}
+CLIMATE_PRESETS = {
+    name: code
+    for code, name in enumerate(
+        ("NONE", "HOME", "AWAY", "BOOST", "COMFORT", "ECO", "SLEEP", "ACTIVITY")
+    )
+}
+
+
+def _temperature_write(target, state, value):
+    return _write(
+        target.cmd(state),
+        value,
+        size=2,
+        encoding=ENC_SCALED,
+        min_value=layout.TEMPERATURE_MIN,
+        max_value=layout.TEMPERATURE_MAX,
+    )
+
+
+def _remote_custom_presets(target):
+    """Custom preset names of a remote climate, in the order of its C++ custom presets.
+
+    Known for `thermostat` only: its `preset:` entries not named like a standard preset.
+    """
+    conf = target.node.platform_configs.get(target.entity["index"]) or {}
+    if conf.get("platform") != "thermostat":
+        return []
+    return [
+        str(p["name"])
+        for p in conf.get("preset") or ()
+        if str(p["name"]).upper() not in CLIMATE_PRESETS
+    ]
+
+
+def _climate_code(option, value, codes, custom=(), custom_base=None):
+    """Code of a constant mode name (standard or custom); a lambda returns the code itself."""
+    if isinstance(value, Lambda):
+        return value
+    name = str(value)
+    if name.upper() in codes:
+        return codes[name.upper()]
+    if name in custom:
+        return custom_base + list(custom).index(name)
+    valid = [n.lower() for n in codes] + list(custom)
+    raise cv.Invalid(
+        f"canopen_entities.climate.control: unknown {option} '{name}', valid: {', '.join(valid)}"
+    )
+
+
+def _climate_control_writes(config, target):
+    writes = []
+    # temperatures first, so the mode change sees the new set points
+    for option in (
+        "target_temperature",
+        "target_temperature_low",
+        "target_temperature_high",
+    ):
+        if option in config:
+            writes.append(_temperature_write(target, option, config[option]))
+    if "target_humidity" in config:
+        writes.append(
+            _write(
+                target.cmd("target_humidity"),
+                config["target_humidity"],
+                encoding=ENC_SCALED,
+                min_value=0.0,
+                max_value=254.0,
+            )
+        )
+    for option, codes, custom, base in (
+        ("fan_mode", CLIMATE_FAN_MODES, (), layout.CLIMATE_CUSTOM_FAN_MODE_BASE),
+        ("swing_mode", CLIMATE_SWING_MODES, (), None),
+        (
+            "preset",
+            CLIMATE_PRESETS,
+            _remote_custom_presets(target),
+            layout.CLIMATE_CUSTOM_PRESET_BASE,
+        ),
+    ):
+        if option in config:
+            code = _climate_code(option, config[option], codes, custom, base)
+            writes.append(_write(target.cmd(option), code))
+    if "mode" in config:
+        writes.append(
+            _write(
+                target.cmd("mode"), _climate_code("mode", config["mode"], CLIMATE_MODES)
+            )
+        )
+    if not writes:
+        raise cv.Invalid(
+            "canopen_entities.climate.control: set at least one of 'mode', 'target_temperature', "
+            "'target_temperature_low', 'target_temperature_high', 'fan_mode', 'swing_mode', "
+            "'preset' or 'target_humidity'"
+        )
+    return writes
+
+
+_remote_action(
+    "canopen_entities.climate.control",
+    (layout.DOMAIN_CLIMATE,),
+    _climate_control_writes,
+    {
+        cv.Optional("mode"): cv.templatable(cv.enum(CLIMATE_MODES, upper=True)),
+        cv.Optional("target_temperature"): cv.templatable(cv.temperature),
+        cv.Optional("target_temperature_low"): cv.templatable(cv.temperature),
+        cv.Optional("target_temperature_high"): cv.templatable(cv.temperature),
+        # standard name or (thermostat) custom preset name; a lambda returns the code
+        cv.Optional("fan_mode"): cv.templatable(cv.string_strict),
+        cv.Optional("swing_mode"): cv.templatable(
+            cv.enum(CLIMATE_SWING_MODES, upper=True)
+        ),
+        cv.Optional("preset"): cv.templatable(cv.string_strict),
+        cv.Optional("target_humidity"): cv.templatable(cv.float_range(min=0, max=100)),
+    },
+)
+
 _remote_action(
     "canopen_entities.number.set",
     (layout.DOMAIN_NUMBER,),

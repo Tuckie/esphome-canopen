@@ -15,6 +15,7 @@ DOMAIN_SWITCH = "switch"
 DOMAIN_LIGHT = "light"
 DOMAIN_COVER = "cover"
 DOMAIN_ALARM = "alarm_control_panel"
+DOMAIN_CLIMATE = "climate"
 
 TPDO_COUNT = 8
 
@@ -27,6 +28,16 @@ LIGHT_CAP_COLOR_TEMPERATURE = 4
 COVER_CAP_POSITION = 1
 COVER_CAP_TILT = 2
 
+# Climate capability bits
+CLIMATE_CAP_CURRENT_TEMPERATURE = 1
+CLIMATE_CAP_TWO_POINT = 2
+CLIMATE_CAP_ACTION = 4
+CLIMATE_CAP_FAN_MODE = 8
+CLIMATE_CAP_SWING_MODE = 16
+CLIMATE_CAP_PRESET = 32
+CLIMATE_CAP_CURRENT_HUMIDITY = 64
+CLIMATE_CAP_TARGET_HUMIDITY = 128
+
 CAPS_NAMES = {
     DOMAIN_LIGHT: {
         "on_off": LIGHT_CAP_ON_OFF,
@@ -36,6 +47,16 @@ CAPS_NAMES = {
     DOMAIN_COVER: {
         "position": COVER_CAP_POSITION,
         "tilt": COVER_CAP_TILT,
+    },
+    DOMAIN_CLIMATE: {
+        "current_temperature": CLIMATE_CAP_CURRENT_TEMPERATURE,
+        "two_point": CLIMATE_CAP_TWO_POINT,
+        "action": CLIMATE_CAP_ACTION,
+        "fan_mode": CLIMATE_CAP_FAN_MODE,
+        "swing_mode": CLIMATE_CAP_SWING_MODE,
+        "preset": CLIMATE_CAP_PRESET,
+        "current_humidity": CLIMATE_CAP_CURRENT_HUMIDITY,
+        "target_humidity": CLIMATE_CAP_TARGET_HUMIDITY,
     },
 }
 
@@ -89,6 +110,95 @@ COVER_PLATFORM_CAPS = {
     ),
     # third-party: https://github.com/bruxy70/Venetian-Blinds-Control
     "venetian_blinds": lambda conf: COVER_CAP_POSITION | COVER_CAP_TILT,
+}
+
+
+_THERMOSTAT_FAN_MODES = ("on", "off", "auto", "low", "medium", "high", "middle", "focus", "diffuse", "quiet")
+_THERMOSTAT_SWING_MODES = ("both", "horizontal", "off", "vertical")
+
+
+def _thermostat_caps(conf):
+    """thermostat: features as enabled in its to_code() (thermostat/climate.py) and traits()."""
+    two_point = "heat_action" in conf and (
+        "cool_action" in conf
+        or (flag(conf, "fan_only_cooling") and "fan_only_action" in conf)
+    )
+    caps = CLIMATE_CAP_CURRENT_TEMPERATURE | CLIMATE_CAP_ACTION
+    if two_point:
+        caps |= CLIMATE_CAP_TWO_POINT
+    if any(f"fan_mode_{mode}_action" in conf for mode in _THERMOSTAT_FAN_MODES):
+        caps |= CLIMATE_CAP_FAN_MODE
+    if any(f"swing_{mode}_action" in conf for mode in _THERMOSTAT_SWING_MODES):
+        caps |= CLIMATE_CAP_SWING_MODE
+    if conf.get("preset"):
+        caps |= CLIMATE_CAP_PRESET
+    if "humidity_sensor" in conf:
+        caps |= CLIMATE_CAP_CURRENT_HUMIDITY
+    if "humidity_control_dehumidify_action" in conf or "humidity_control_humidify_action" in conf:
+        caps |= CLIMATE_CAP_TARGET_HUMIDITY
+    return caps
+
+
+def _humidity_sensor_caps(conf):
+    return CLIMATE_CAP_CURRENT_HUMIDITY if "humidity_sensor" in conf else 0
+
+
+def _climate_ir_caps(extra):
+    """climate_ir based platforms: current temperature / humidity with `sensor:` / `humidity_sensor:`,
+    fan / swing modes and presets fixed by each platform's ClimateIR constructor."""
+
+    def caps(conf):
+        return (
+            extra
+            | (CLIMATE_CAP_CURRENT_TEMPERATURE if "sensor" in conf else 0)
+            | _humidity_sensor_caps(conf)
+        )
+
+    return caps
+
+
+_IR_FAN_SWING = CLIMATE_CAP_FAN_MODE | CLIMATE_CAP_SWING_MODE
+
+# Climate capabilities of climate platforms, mirroring each platform's traits().
+CLIMATE_PLATFORM_CAPS = {
+    "thermostat": _thermostat_caps,
+    "bang_bang": lambda conf: CLIMATE_CAP_CURRENT_TEMPERATURE
+    | CLIMATE_CAP_TWO_POINT
+    | CLIMATE_CAP_ACTION
+    | (CLIMATE_CAP_PRESET if "away_config" in conf else 0)
+    | _humidity_sensor_caps(conf),
+    "pid": lambda conf: CLIMATE_CAP_CURRENT_TEMPERATURE
+    | CLIMATE_CAP_ACTION
+    | _humidity_sensor_caps(conf),
+    **{
+        platform: _climate_ir_caps(_IR_FAN_SWING)
+        for platform in (
+            "ballu",
+            "climate_ir_lg",
+            "coolix",
+            "daikin",
+            "daikin_brc",
+            "delonghi",
+            "emmeti",
+            "fujitsu_general",
+            "gree",
+            "heatpumpir",
+            "hitachi_ac344",
+            "hitachi_ac424",
+            "noblex",
+            "tcl112",
+            "whirlpool",
+        )
+    },
+    # daikin_arc adds current temperature and target humidity to the ClimateIR traits
+    "daikin_arc": lambda conf: _climate_ir_caps(_IR_FAN_SWING)(conf)
+    | CLIMATE_CAP_CURRENT_TEMPERATURE
+    | CLIMATE_CAP_TARGET_HUMIDITY,
+    **{
+        platform: _climate_ir_caps(_IR_FAN_SWING | CLIMATE_CAP_PRESET)
+        for platform in ("midea_ir", "mitsubishi", "zhlt01")
+    },
+    **{platform: _climate_ir_caps(CLIMATE_CAP_FAN_MODE) for platform in ("toshiba", "whynter")},
 }
 
 
@@ -156,7 +266,7 @@ def caps_from_names(domain, names):
 
 
 def entity_caps(domain, platform_config, caps_override=None):
-    """Capability bits of a light / cover entity, None for other domains.
+    """Capability bits of a light / cover / climate entity, None for other domains.
 
     `caps_override` (list of capability names from the `caps:` option) takes
     precedence; otherwise caps are derived from the platform config.
@@ -173,7 +283,8 @@ def entity_caps(domain, platform_config, caps_override=None):
         if modes is None:
             raise LayoutError(_unknown_platform_msg(domain, platform))
         return light_caps_from_color_modes(modes(platform_config))
-    caps = COVER_PLATFORM_CAPS.get(platform)
+    platform_caps = CLIMATE_PLATFORM_CAPS if domain == DOMAIN_CLIMATE else COVER_PLATFORM_CAPS
+    caps = platform_caps.get(platform)
     if caps is None:
         raise LayoutError(_unknown_platform_msg(domain, platform))
     return caps(platform_config)
@@ -194,6 +305,21 @@ KIND_COLOR_TEMP = "color_temp"  # UINT8 0..254 -> 100..1000 mireds
 KIND_COVER_STATE = "cover_state"  # 0 open, 1 opening, 2 closed, 3 closing
 KIND_ALARM_STATE = "alarm_state"  # 0..9
 KIND_VALUE = "value"  # sensor / number: REAL32, or UINT8 / UINT16 scaled to min_value..max_value
+KIND_TEMPERATURE = "temperature"  # UINT16 scaled to -327.67..327.67 degC (0.01 degC steps), 65535 unknown
+KIND_CLIMATE_MODE = "climate_mode"  # 0 off, 1 heat_cool, 2 cool, 3 heat, 4 fan_only, 5 dry, 6 auto
+KIND_CLIMATE_ACTION = "climate_action"  # 0 off, 2 cooling, 3 heating, 4 idle, 5 drying, 6 fan, 7 defrosting
+KIND_CLIMATE_FAN_MODE = "climate_fan_mode"  # 0..9 climate::ClimateFanMode, 10 + n custom fan mode n, 255 none
+KIND_CLIMATE_SWING_MODE = "climate_swing_mode"  # 0 off, 1 both, 2 vertical, 3 horizontal
+KIND_CLIMATE_PRESET = "climate_preset"  # 0..7 climate::ClimatePreset, 8 + n custom preset n, 255 none
+KIND_HUMIDITY = "humidity"  # UINT8 0..254 %, rounded, 255 unknown
+
+# first codes of custom fan modes / presets
+CLIMATE_CUSTOM_FAN_MODE_BASE = 10
+CLIMATE_CUSTOM_PRESET_BASE = 8
+
+# fixed range of KIND_TEMPERATURE: (wire = round(100 * (value + 327.67)))
+TEMPERATURE_MIN = -327.67
+TEMPERATURE_MAX = 327.67
 
 # C++ RemoteStateKind (remote_entities.h)
 KIND_CODES = {
@@ -203,6 +329,13 @@ KIND_CODES = {
     KIND_COVER_STATE: 3,
     KIND_ALARM_STATE: 4,
     KIND_VALUE: 5,
+    KIND_TEMPERATURE: 6,
+    KIND_CLIMATE_MODE: 7,
+    KIND_CLIMATE_ACTION: 8,
+    KIND_CLIMATE_FAN_MODE: 9,
+    KIND_CLIMATE_SWING_MODE: 10,
+    KIND_CLIMATE_PRESET: 11,
+    KIND_HUMIDITY: 12,
 }
 
 
@@ -211,6 +344,8 @@ def entity_state_kinds(domain, caps=None, size=None):
 
     Must match the order of od_add_state() calls in entities.cpp. Commands are
     added in the same order, so a state's position is also its command index.
+    Read-only states (climate action, current temperature / humidity) come last
+    and have no command.
     """
     if domain in (DOMAIN_SENSOR, DOMAIN_NUMBER):
         size = 4 if size is None else size
@@ -235,6 +370,29 @@ def entity_state_kinds(domain, caps=None, size=None):
         if caps & COVER_CAP_TILT:
             states.append(("tilt", 1, KIND_PERCENTAGE))
         return states
+    if domain == DOMAIN_CLIMATE:
+        states = [("mode", 1, KIND_CLIMATE_MODE)]
+        if caps & CLIMATE_CAP_TWO_POINT:
+            states.append(("target_temperature_low", 2, KIND_TEMPERATURE))
+            states.append(("target_temperature_high", 2, KIND_TEMPERATURE))
+        else:
+            states.append(("target_temperature", 2, KIND_TEMPERATURE))
+        if caps & CLIMATE_CAP_FAN_MODE:
+            states.append(("fan_mode", 1, KIND_CLIMATE_FAN_MODE))
+        if caps & CLIMATE_CAP_SWING_MODE:
+            states.append(("swing_mode", 1, KIND_CLIMATE_SWING_MODE))
+        if caps & CLIMATE_CAP_PRESET:
+            states.append(("preset", 1, KIND_CLIMATE_PRESET))
+        if caps & CLIMATE_CAP_TARGET_HUMIDITY:
+            states.append(("target_humidity", 1, KIND_HUMIDITY))
+        # read-only, no commands
+        if caps & CLIMATE_CAP_ACTION:
+            states.append(("action", 1, KIND_CLIMATE_ACTION))
+        if caps & CLIMATE_CAP_CURRENT_TEMPERATURE:
+            states.append(("current_temperature", 2, KIND_TEMPERATURE))
+        if caps & CLIMATE_CAP_CURRENT_HUMIDITY:
+            states.append(("current_humidity", 1, KIND_HUMIDITY))
+        return states
     raise LayoutError(f"Unsupported entity domain: {domain}")
 
 
@@ -247,14 +405,57 @@ def entity_state_sizes(domain, caps=None, size=None):
     return [size for _, size in entity_states(domain, caps, size)]
 
 
-def tpdo_number(entity_config):
-    """`tpdo:` of an entity: int, or {number: ...} mapping; -1 when not set."""
-    tpdo = entity_config.get("tpdo", -1)
+TPDO_SIZE = 8  # bytes
+
+
+def _tpdo_entry_number(tpdo):
     return tpdo["number"] if isinstance(tpdo, dict) else tpdo
+
+
+def tpdo_numbers(entity_config):
+    """`tpdo:` of an entity as a list of TPDO numbers: int, {number: ...} mapping or a
+    list of those; [-1] when not set."""
+    tpdo = entity_config.get("tpdo", -1)
+    if isinstance(tpdo, list):
+        return [_tpdo_entry_number(t) for t in tpdo]
+    return [_tpdo_entry_number(tpdo)]
+
+
+def assign_tpdos(tpdos, sizes, used):
+    """TPDO number of each state of an entity.
+
+    One TPDO: all states go there (an overflow is reported by tpdo_mapping()).
+    Several: each state, in order, goes to the first listed TPDO with room for it;
+    `used` (bytes per TPDO taken by the states before) is updated.
+    """
+    if len(tpdos) == 1:
+        result = [tpdos[0]] * len(sizes)
+    else:
+        result = []
+        for size in sizes:
+            for tpdo in tpdos:
+                if used.get(tpdo, 0) + size <= TPDO_SIZE:
+                    break
+            else:
+                free = ", ".join(f"TPDO{t}: {TPDO_SIZE - used.get(t, 0)} B" for t in tpdos)
+                raise LayoutError(
+                    f"states don't fit the TPDOs {tpdos} (no room for a {size} B state, free: {free}), "
+                    "add a TPDO to 'tpdo'"
+                )
+            used[tpdo] = used.get(tpdo, 0) + size
+            result.append(tpdo)
+        return result
+    for tpdo, size in zip(result, sizes):
+        if tpdo >= 0:
+            used[tpdo] = used.get(tpdo, 0) + size
+    return result
 
 
 def node_states(node_config, resolve_entity):
     """(entity_index, tpdo, size, label) of all OD states of a node.
+
+    `tpdo` is per state: an entity with a list of TPDOs is spread over them, see
+    assign_tpdos().
 
     In the order they are added to the OD at runtime: template entity states
     (added in codegen), then entities by index (CanopenComponent::setup()).
@@ -265,23 +466,29 @@ def node_states(node_config, resolve_entity):
     entity the config refers to.
     """
     states = []
+    used = {}  # bytes per TPDO, for entities spread over several TPDOs
     for tmpl_entity in node_config.get("template_entities") or ():
         for num, state in enumerate(tmpl_entity.get("states") or (), 1):
             size = TEMPLATE_STATE_SIZES[state["type"]]
             label = f"template{tmpl_entity['index']}.{num}"
-            states.append((tmpl_entity["index"], tmpl_entity.get("tpdo", -1), size, label))
+            tpdo = tmpl_entity.get("tpdo", -1)
+            if tpdo >= 0:
+                used[tpdo] = used.get(tpdo, 0) + size
+            states.append((tmpl_entity["index"], tpdo, size, label))
     entities = list(enumerate(node_config.get("entities") or ()))
     for pos, entity_config in sorted(entities, key=lambda x: x[1]["index"]):
         try:
             domain, platform_config = resolve_entity(entity_config)
             caps = entity_caps(domain, platform_config, entity_config.get("caps"))
             entity_state_list = entity_states(domain, caps, entity_config.get("size"))
+            tpdos = assign_tpdos(
+                tpdo_numbers(entity_config), [size for _, size in entity_state_list], used
+            )
         except LayoutError as err:
             raise LayoutError(f"entity '{entity_config['id']}': {err}", pos) from err
-        tpdo = tpdo_number(entity_config)
         states.extend(
             (entity_config["index"], tpdo, size, f"{entity_config['id']}.{name}")
-            for name, size in entity_state_list
+            for (name, size), tpdo in zip(entity_state_list, tpdos)
         )
     return states
 
